@@ -75,3 +75,64 @@ def test_console_sink_renders_events():
     text = out.getvalue()
     assert "Загрузка видео — готово" in text
     assert "Внимание: у видео нет heatmap" in text
+
+
+def fake_youtube_source(heatmap):
+    from clipper.core.models import SourceInfo
+
+    return SourceInfo(
+        id="dQw4w9WgXcQ",
+        kind="youtube",
+        input="https://youtu.be/dQw4w9WgXcQ",
+        video="C:/work/dQw4w9WgXcQ/source.mp4",
+        title="Тестовое видео",
+        duration=200.0,
+        width=1920,
+        height=1080,
+        fps=30.0,
+        has_audio=True,
+        heatmap=heatmap,
+    )
+
+
+def test_print_source_shows_heatmap_chart(monkeypatch):
+    from pathlib import Path
+
+    from clipper import console as console_module
+    from clipper.core.models import HeatPoint
+
+    values = [0.2] * 100
+    values[60] = 1.0  # пик на 2:00
+    heatmap = [HeatPoint(i * 2.0, (i + 1) * 2.0, value) for i, value in enumerate(values)]
+    out = StringIO()
+    monkeypatch.setattr(console_module, "console", Console(file=out, width=120))
+    console_module.print_source(fake_youtube_source(heatmap), Path("work/dQw4w9WgXcQ"))
+    text = out.getvalue()
+    assert "Длительность:  03:20   1920×1080, 30 к/с, есть звук" in text
+    assert "пик на 02:00–02:02" in text
+    chart = [line for line in text.splitlines() if "█" in line or "▄" in line]
+    assert len(chart) == 4  # 4 строки столбиков
+    assert "00:00" in text and "01:40" in text and "03:20" in text
+
+
+def test_heatmap_chart_levels():
+    from clipper.console import heatmap_chart
+    from clipper.core.models import HeatPoint
+
+    points = [HeatPoint(0, 1, 0.0), HeatPoint(1, 2, 0.5), HeatPoint(2, 3, 1.0), HeatPoint(3, 4, 0.1)]
+    lines = [line.plain for line in heatmap_chart(points, 4.0, width=4, height=2)]
+    assert lines[0] == "  █ "  # верхний ряд: только максимум
+    assert lines[1] == " ██▄"  # 0.5 — полный нижний ряд, 0.1 — полблока
+    assert lines[2].startswith("00:00") and lines[2].endswith("00:04")
+
+
+def test_print_source_without_heatmap(monkeypatch):
+    from pathlib import Path
+
+    from clipper import console as console_module
+
+    out = StringIO()
+    monkeypatch.setattr(console_module, "console", Console(file=out, width=200))
+    console_module.print_source(fake_youtube_source(None), Path("work/x"))
+    assert "Самые популярные фрагменты" in out.getvalue()
+    assert "keywords" in out.getvalue()

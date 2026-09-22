@@ -72,6 +72,7 @@ clipper/                      корень репозитория
 ```
 work/<id>/                  id = ID ролика на YouTube или имя файла
   source.mp4, info.json     скачанное видео и метаданные yt-dlp (локальный файл не копируется)
+  source.json               итог этапа 1: путь к видео, параметры, heatmap
   audio16k.wav              звук для Whisper
   transcript.json           кэш распознавания
   project.json              ← этот файл правите вы
@@ -183,6 +184,11 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 - Для YouTube yt-dlp нужен JS-движок. Deno ставится pip-пакетом
   (`yt-dlp[default,deno]`), yt-dlp находит его сам.
 - Для локального файла параметры берутся через ffprobe, heatmap у него нет.
+- Для ссылки YouTube ID виден прямо в ссылке: если `work/<id>/source.json` и видео
+  уже есть, повторный запуск не обращается к сети (`--force` — скачать заново).
+- yt-dlp получает тот же ffmpeg, что выбрал clipper (`ffmpeg_location`), и найденный
+  JS-движок (`js_runtimes`); `download.cookies_from_browser` — для роликов,
+  где YouTube просит войти.
 
 ### 2. Распознавание (`transcribe.py`)
 - faster-whisper `large-v3`, `device="cuda"`, `compute_type="float16"`,
@@ -287,7 +293,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | `clipper` | справка | 0 ✅ |
 | `clipper doctor` | проверка окружения: Python, ffmpeg (libass, NVENC), yt-dlp + Deno, GPU/CUDA/cuBLAS/cuDNN, пакеты | 0 ✅ |
 | `clipper config [--init]` | итоговые параметры / создать `clipper.yaml` из примера | 0 ✅ |
-| `clipper download SRC` | только загрузка (служебная) | 1 |
+| `clipper download SRC` | загрузка видео и heatmap, мини-график в терминале | 1 ✅ |
 | `clipper transcribe SRC` | только распознавание + `.srt` для проверки в плеере (служебная) | 2 |
 | `clipper analyze SRC` | → `work/<id>/project.json` + таблица найденных клипов | 3 |
 | `clipper render` | → `output/<id>/clip_NN.mp4`; без `--project` берёт последний проект | 3–7 |
@@ -352,7 +358,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | Этап | Что появляется | Проверка на коротком видео (2–5 мин) |
 |---|---|---|
 | 0 ✅ | каркас, конфиг, `doctor` | `clipper doctor`, `clipper config` |
-| 1 | загрузка + heatmap | `clipper download URL` |
+| 1 ✅ | загрузка + heatmap | `clipper download URL` |
 | 2 | распознавание | `clipper transcribe URL --lang ru` → `.srt` в плеере |
 | 3 | выбор моментов, project.json, простая нарезка | `clipper analyze URL --clips 3 --min-len 15 --max-len 40` → `clipper render` |
 | 4 | паузы, слова-паразиты | `clipper render --cut-pauses --remove-fillers` |

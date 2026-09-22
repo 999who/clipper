@@ -16,7 +16,7 @@
 | Этап | Что умеет | Готово |
 |---|---|---|
 | 0 | каркас, конфиг, `clipper doctor`, `clipper config` | ✅ |
-| 1 | загрузка видео и heatmap | |
+| 1 | загрузка видео и heatmap, `clipper download` | ✅ |
 | 2 | распознавание речи (Whisper large-v3 на GPU) | |
 | 3 | выбор моментов, `project.json`, нарезка | |
 | 4 | вырезание пауз и слов-паразитов | |
@@ -94,6 +94,28 @@ clipper config --set select.clips=3 --set reframe.aspect=1:1
 - Все параметры с пояснениями — в [clipper.example.yaml](clipper.example.yaml).
 - Ваш `clipper.yaml` не хранится в git, поэтому обновления проекта не
   конфликтуют с вашими правками.
+
+## Загрузка видео (этап 1)
+
+```
+clipper download "https://www.youtube.com/watch?v=..."
+clipper download "D:\Видео\стрим.mp4"
+```
+
+- Видео с YouTube скачивается в `work/<id>/source.mp4` (H.264 до 1080p + AAC),
+  рядом кладутся `info.json` (все метаданные yt-dlp) и `source.json`
+  (параметры видео и heatmap в удобном виде).
+- Локальный файл не копируется: clipper читает его параметры через ffprobe,
+  а `source.json` пишет в `work/<имя файла>/`.
+- В конце печатаются путь, длительность, разрешение и мини-график heatmap
+  («Самые популярные фрагменты»). Heatmap есть только у достаточно
+  популярных роликов YouTube.
+- Повторный запуск с той же ссылкой не качает видео заново; `--force` —
+  скачать ещё раз. `--max-height 720` — ограничить качество.
+- Если YouTube просит войти («подтвердите, что вы не бот»), укажите браузер,
+  в котором вы вошли в YouTube:
+  `--set download.cookies_from_browser=firefox`. Из Chrome на Windows
+  cookies прочитать нельзя.
 
 ## Проверка этапа 0
 

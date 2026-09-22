@@ -20,6 +20,7 @@ from clipper.console import (
     print_config,
     print_doctor,
     print_error,
+    print_source,
     setup_logging,
     setup_stdio,
 )
@@ -33,6 +34,7 @@ from clipper.core.config import (
     write_example_config,
 )
 from clipper.core.doctor import run_doctor
+from clipper.core.download import prepare_source
 from clipper.core.errors import Cancelled, ClipperError
 from clipper.core.events import CancelToken, Reporter
 
@@ -163,6 +165,26 @@ def config_command(
             return
         cfg, path = build_config(config, set_items)
         print_config(dump_config(cfg), path, parse_set_options(set_items or []))
+
+
+@app.command()
+def download(
+    source: Annotated[str, typer.Argument(metavar="ССЫЛКА_ИЛИ_ФАЙЛ", help="Ссылка на видео YouTube или путь к файлу.")],
+    max_height: Annotated[
+        Optional[int],
+        typer.Option("--max-height", help="Максимальная высота видео, px (по умолчанию 1080).", show_default=False),
+    ] = None,
+    force: Annotated[bool, typer.Option("--force", help="Скачать заново, даже если видео уже есть в work/.")] = False,
+    config: ConfigOption = None,
+    set_items: SetOption = None,
+    verbose: VerboseOption = False,
+) -> None:
+    """Скачать видео и heatmap в work/<id>/ (для файла — прочитать параметры)."""
+    with _command(verbose) as token:
+        cfg, _ = build_config(config, set_items, {"download.max_height": max_height})
+        with ConsoleSink() as sink:
+            source_info = prepare_source(source, cfg, Reporter(sink, token), force=force)
+        print_source(source_info, Path(cfg.paths.workdir).resolve() / source_info.id)
 
 
 def main() -> None:

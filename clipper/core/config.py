@@ -46,6 +46,7 @@ class PathsConfig:
 @dataclass
 class DownloadConfig:
     max_height: int = 1080  # максимальная высота скачиваемого видео, px
+    cookies_from_browser: str | None = None  # браузер, из которого yt-dlp возьмёт cookies
 
 
 @dataclass

@@ -32,6 +32,7 @@ from rich.text import Text
 from clipper.core.doctor import CheckResult
 from clipper.core.errors import ClipperError
 from clipper.core.events import Event, Message, StageFinished, StageProgress, StageStarted
+from clipper.core.models import HeatPoint, SourceInfo, heatmap_peak, heatmap_profile
 
 console = Console(highlight=False)
 
@@ -198,6 +199,71 @@ def print_config(config_yaml: str, path: Path | None, overridden: dict[str, Any]
         console.print("Из командной строки: " + escape(", ".join(overridden)))
     console.print()
     console.print(Syntax(config_yaml, "yaml", theme="ansi_dark", background_color="default", word_wrap=True))
+
+
+# --- download -------------------------------------------------------------------------
+
+
+def print_source(source: SourceInfo, work_dir: Path) -> None:
+    """Итог этапа загрузки: где видео, какое оно и мини-график heatmap."""
+    audio = "есть звук" if source.has_audio else "[yellow]без звука[/]"
+    fps = f"{source.fps:g} к/с" if source.fps else "? к/с"
+    rows = [
+        ("Видео", escape(source.video)),
+        ("Название", escape(source.title)),
+        ("Длительность", f"{_clock(source.duration)}   {source.width}×{source.height}, {fps}, {audio}"),
+        ("Рабочая папка", escape(str(work_dir))),
+    ]
+    if source.heatmap:
+        peak = heatmap_peak(source.heatmap)
+        rows.append(
+            (
+                "Heatmap",
+                f"[green]есть[/] — {len(source.heatmap)} точек, пик на {_clock(peak.start)}–{_clock(peak.end)}",
+            )
+        )
+    elif source.kind == "file":
+        rows.append(("Heatmap", "нет — у локального файла его не бывает; моменты выберет режим keywords"))
+    elif source.kind == "url":
+        rows.append(("Heatmap", "нет — он бывает только у видео YouTube; моменты выберет режим keywords"))
+    else:
+        rows.append(
+            (
+                "Heatmap",
+                "[yellow]нет[/] — YouTube не показывает «Самые популярные фрагменты» для этого видео "
+                "(обычно у новых или малопросматриваемых); моменты выберет режим keywords",
+            )
+        )
+    console.print()
+    for label, value in rows:
+        console.print(f"[bold]{label + ':':<15}[/]{value}")
+    if source.heatmap:
+        console.print()
+        width = max(20, min(len(source.heatmap), console.width - 4))
+        for line in heatmap_chart(source.heatmap, source.duration, width):
+            console.print(Text("  ") + line)
+
+
+def heatmap_chart(points: list[HeatPoint], duration: float, width: int, height: int = 4) -> list[Text]:
+    """Столбиковый график heatmap из символов █ и ▄ (есть во всех шрифтах Windows) + шкала времени."""
+    profile = heatmap_profile(points, width, duration)
+    top = max(profile) or 1.0
+    levels = [0 if v <= 0 else max(1, round(v / top * height * 2)) for v in profile]
+    peak_column = levels.index(max(levels))
+    lines: list[Text] = []
+    for row in range(height):
+        floor = (height - 1 - row) * 2
+        line = Text()
+        for column, level in enumerate(levels):
+            char = "█" if level >= floor + 2 else "▄" if level == floor + 1 else " "
+            line.append(char, style="yellow" if column == peak_column else "cyan")
+        lines.append(line)
+    end = max(duration, points[-1].end)
+    left, middle, right = _clock(0), _clock(end / 2), _clock(end)
+    gap = max(width - len(left) - len(middle) - len(right), 2)
+    axis = left + " " * (gap // 2) + middle + " " * (gap - gap // 2) + right
+    lines.append(Text(axis, style="dim"))
+    return lines
 
 
 # --- Форматирование ------------------------------------------------------------------
