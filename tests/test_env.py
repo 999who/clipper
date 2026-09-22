@@ -38,8 +38,23 @@ Error while filtering: Operation not permitted
 """
 
 
+FILTERS_NEW = """Filters:
+  T.. = Timeline support
+  .S. = Slice threading
+  A = Audio input/output
+  | = Source or sink filter
+  ------
+ TS aap               AA->A      Apply Affine Projection algorithm to first audio stream.
+ .. abench            A->A       Benchmark part of a filtergraph.
+ T. crop              V->V       Crop the input video.
+ .. color             |->V       Provide an uniformly colored input.
+"""
+
+
 def test_parse_ffmpeg_listings():
     assert parse_filters(FILTERS) == {"ass", "crop", "color", "vstack"}
+    # ffmpeg 8+ (в том числе 9.0.2 от winget): две колонки флагов вместо трёх.
+    assert parse_filters(FILTERS_NEW) == {"aap", "abench", "crop", "color"}
     assert parse_encoders(ENCODERS) == {"libx264", "h264_nvenc", "aac"}
 
 

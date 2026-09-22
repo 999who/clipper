@@ -258,7 +258,7 @@ def heatmap_chart(points: list[HeatPoint], duration: float, width: int, height: 
             char = "█" if level >= floor + 2 else "▄" if level == floor + 1 else " "
             line.append(char, style="yellow" if column == peak_column else "cyan")
         lines.append(line)
-    end = max(duration, points[-1].end)
+    end = duration or points[-1].end  # подписи — по длительности видео, как в строке выше
     left, middle, right = _clock(0), _clock(end / 2), _clock(end)
     gap = max(width - len(left) - len(middle) - len(right), 2)
     axis = left + " " * (gap // 2) + middle + " " * (gap - gap // 2) + right

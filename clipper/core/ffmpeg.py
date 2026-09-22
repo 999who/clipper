@@ -92,7 +92,8 @@ def _float(value: Any) -> float | None:
         return None
 
 
-_FILTER_LINE = re.compile(r"^\s*[T.][S.][C.]\s+(\S+)\s+\S*->\S*", re.M)
+# Флаги фильтра: «TSC» в ffmpeg до 7.x, «TS» в новых (флаг команд убрали).
+_FILTER_LINE = re.compile(r"^\s*[T.][S.][C.]?\s+(\S+)\s+\S*->\S*", re.M)
 _ENCODER_LINE = re.compile(r"^\s*[VAS][F.][S.][X.][B.][D.]\s+(\S+)", re.M)
 
 
