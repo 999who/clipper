@@ -323,6 +323,68 @@ OutOption = Annotated[
 ]
 
 
+PANEL_AUDIO = "Звук"
+
+CutPausesOption = Annotated[
+    Optional[bool],
+    typer.Option(
+        "--cut-pauses/--no-cut-pauses", help="Вырезать паузы.", show_default=False, rich_help_panel=PANEL_AUDIO
+    ),
+]
+PauseDetectOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--pause-detect",
+        help="Как искать паузы: volume — по громкости, words — по промежуткам между словами (для стримов).",
+        show_default=False,
+        rich_help_panel=PANEL_AUDIO,
+    ),
+]
+SilenceDbOption = Annotated[
+    Optional[float],
+    typer.Option(
+        "--silence-db", help="Порог тишины, дБ (по умолчанию -35).", show_default=False, rich_help_panel=PANEL_AUDIO
+    ),
+]
+MinPauseOption = Annotated[
+    Optional[float],
+    typer.Option(
+        "--min-pause",
+        help="Вырезать паузы не короче, с (по умолчанию 0.6).",
+        show_default=False,
+        rich_help_panel=PANEL_AUDIO,
+    ),
+]
+FillersOption = Annotated[
+    Optional[bool],
+    typer.Option(
+        "--remove-fillers/--keep-fillers",
+        help="Вырезать слова-паразиты (список — audio.fillers).",
+        show_default=False,
+        rich_help_panel=PANEL_AUDIO,
+    ),
+]
+VerbatimOption = Annotated[
+    Optional[bool],
+    typer.Option(
+        "--verbatim/--no-verbatim",
+        help="Просить Whisper записывать «эм», «ээ» — нужно, чтобы их потом вырезать.",
+        show_default=False,
+        rich_help_panel=PANEL_SELECT,
+    ),
+]
+
+
+def _audio_flags(cut_pauses, pause_detect, silence_db, min_pause, fillers) -> dict[str, Any]:
+    return {
+        "audio.cut_pauses": cut_pauses,
+        "audio.pause_detect": pause_detect,
+        "audio.silence_db": silence_db,
+        "audio.min_pause": min_pause,
+        "audio.remove_fillers": fillers,
+    }
+
+
 def _select_flags(mode, keywords, clips, min_len, max_len, lang) -> dict[str, Any]:
     return {
         "select.mode": mode,
@@ -354,6 +416,7 @@ def analyze(
     min_len: MinLenOption = None,
     max_len: MaxLenOption = None,
     lang: LangOption = None,
+    verbatim: VerbatimOption = None,
     force: ForceOption = False,
     config: ConfigOption = None,
     set_items: SetOption = None,
@@ -361,7 +424,9 @@ def analyze(
 ) -> None:
     """Выбрать моменты и распознать речь → work/<id>/project.json (его можно поправить руками)."""
     with _command(verbose) as token:
-        cfg, _ = build_config(config, set_items, _select_flags(mode, keywords, clips, min_len, max_len, lang))
+        flags = _select_flags(mode, keywords, clips, min_len, max_len, lang)
+        flags["transcribe.verbatim"] = verbatim
+        cfg, _ = build_config(config, set_items, flags)
         with ConsoleSink() as sink:
             project, path = pipeline.analyze(source, cfg, Reporter(sink, token), force=force)
         print_analysis(project, path)
@@ -373,13 +438,20 @@ def render(
     clip: ClipOption = None,
     encoder: EncoderOption = None,
     out: OutOption = None,
+    cut_pauses: CutPausesOption = None,
+    pause_detect: PauseDetectOption = None,
+    silence_db: SilenceDbOption = None,
+    min_pause: MinPauseOption = None,
+    fillers: FillersOption = None,
     config: ConfigOption = None,
     set_items: SetOption = None,
     verbose: VerboseOption = False,
 ) -> None:
     """Нарезать клипы по project.json → output/<id>/clip_NN.mp4."""
     with _command(verbose) as token:
-        cfg, _ = build_config(config, set_items, {"render.encoder": encoder, "paths.output": out})
+        flags = {"render.encoder": encoder, "paths.output": out}
+        flags.update(_audio_flags(cut_pauses, pause_detect, silence_db, min_pause, fillers))
+        cfg, _ = build_config(config, set_items, flags)
         with ConsoleSink() as sink:
             _, folder, results = pipeline.render(cfg, Reporter(sink, token), project, _clip_ids(clip))
         print_render(results, folder)
@@ -396,9 +468,15 @@ def run(
     min_len: MinLenOption = None,
     max_len: MaxLenOption = None,
     lang: LangOption = None,
+    verbatim: VerbatimOption = None,
     force: ForceOption = False,
     encoder: EncoderOption = None,
     out: OutOption = None,
+    cut_pauses: CutPausesOption = None,
+    pause_detect: PauseDetectOption = None,
+    silence_db: SilenceDbOption = None,
+    min_pause: MinPauseOption = None,
+    fillers: FillersOption = None,
     config: ConfigOption = None,
     set_items: SetOption = None,
     verbose: VerboseOption = False,
@@ -406,7 +484,9 @@ def run(
     """analyze + render одной командой: от ссылки до готовых клипов."""
     with _command(verbose) as token:
         flags = _select_flags(mode, keywords, clips, min_len, max_len, lang)
+        flags["transcribe.verbatim"] = verbatim
         flags.update({"render.encoder": encoder, "paths.output": out})
+        flags.update(_audio_flags(cut_pauses, pause_detect, silence_db, min_pause, fillers))
         cfg, _ = build_config(config, set_items, flags)
         with ConsoleSink() as sink:
             project, folder, results = pipeline.run(source, cfg, Reporter(sink, token), force=force)

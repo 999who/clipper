@@ -1,8 +1,8 @@
 """Рендер клипов через ffmpeg.
 
-Сейчас (этап 3) клип нарезается как есть: исходный кадр, H.264 + AAC. Вырезание
-пауз, субтитры и вертикальный кадр добавятся следующими этапами, поверх этого же
-модуля.
+Клип вырезается из исходника в H.264 + AAC. Если включены audio.cut_pauses или
+audio.remove_fillers, из него вырезаются паузы и слова-паразиты (куски склеиваются
+через trim/concat). Субтитры и вертикальный кадр добавятся следующими этапами.
 
 Ошибка в одном клипе не останавливает остальные: она попадает в результат,
 а в конце интерфейс показывает сводку. Готовый файл сначала пишется во
@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from clipper.core import env
+from clipper.core.audio import ClipEdit, detect_silences, plan_edit
 from clipper.core.config import Config
 from clipper.core.errors import ClipperError
 from clipper.core.events import Reporter
@@ -28,6 +29,7 @@ VIDEO_ARGS = {
     "x264": ["-c:v", "libx264", "-preset", "medium", "-crf", "20"],
 }
 AUDIO_ARGS = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+FADE = 0.01  # с: фейд звука на стыках вырезок
 
 
 @dataclass(frozen=True)
@@ -35,7 +37,9 @@ class RenderResult:
     clip_id: int
     path: Path | None  # None — клип не получился
     error: str | None = None
-    duration: float = 0.0
+    duration: float = 0.0  # длина готового клипа
+    removed: float = 0.0  # сколько секунд вырезано (паузы и паразиты)
+    fillers: int = 0  # сколько слов-паразитов вырезано
 
 
 def clip_filename(clip: Clip) -> str:
@@ -102,17 +106,41 @@ def render_project(
         title = f"Клип {number}/{len(clips)} (id {clip.id})"
         target = out / clip_filename(clip)
         try:
-            with reporter.stage(f"clip_{clip.id}", title, total=clip.duration, unit="seconds") as stage:
-                render_clip(clip, video, target, ffmpeg.path, encoder, reporter, stage.update, work_dir)
-                stage.result = target.name
-            results.append(RenderResult(clip.id, target, duration=clip.duration))
+            edit = clip_edit(clip, video, ffmpeg.path, cfg, project.source.has_audio)
+            length = edit.timeline.duration
+            with reporter.stage(f"clip_{clip.id}", title, total=length, unit="seconds") as stage:
+                render_clip(clip, edit, video, target, ffmpeg.path, encoder, reporter, stage.update, work_dir,
+                            has_audio=project.source.has_audio)  # fmt: skip
+                stage.result = target.name + _edit_note(edit)
+            results.append(
+                RenderResult(clip.id, target, duration=length, removed=edit.timeline.removed, fillers=len(edit.fillers))
+            )
         except ClipperError as exc:
             results.append(RenderResult(clip.id, None, error=exc.message))
     return results
 
 
+def clip_edit(clip: Clip, video: Path, ffmpeg: str, cfg: Config, has_audio: bool) -> ClipEdit:
+    """План вырезок клипа по audio.*: паузы (по громкости или по словам) и паразиты."""
+    audio = cfg.audio
+    silences = None
+    if audio.cut_pauses and audio.pause_detect == "volume" and has_audio:
+        silences = detect_silences(ffmpeg, video, clip.start, clip.end, audio.silence_db, audio.min_pause)
+    return plan_edit(clip, cfg, silences)
+
+
+def _edit_note(edit: ClipEdit) -> str:
+    parts = []
+    if edit.pauses:
+        parts.append(f"паузы −{edit.paused_seconds:.1f} с")
+    if edit.fillers:
+        parts.append(f"паразиты: {len(edit.fillers)}")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
 def render_clip(
     clip: Clip,
+    edit: ClipEdit,
     video: Path,
     target: Path,
     ffmpeg: str,
@@ -120,21 +148,51 @@ def render_clip(
     reporter: Reporter,
     on_progress,
     work_dir: Path,
+    *,
+    has_audio: bool = True,
 ) -> None:
-    """Вырезать клип [start, end] из исходника и закодировать в H.264 + AAC."""
+    """Вырезать клип из исходника (с вырезками по edit) и закодировать в H.264 + AAC."""
     tmp = target.with_name(target.stem + ".part.mp4")
-    args = [
-        # -ss перед -i: быстрый переход к нужному месту; при перекодировании он точный до кадра.
-        "-ss", f"{clip.start:.3f}", "-i", str(video), "-t", f"{clip.duration:.3f}",
-        "-map", "0:v:0", "-map", "0:a:0?",
-        *VIDEO_ARGS[encoder], "-pix_fmt", "yuv420p",
-        *AUDIO_ARGS,
-        "-movflags", "+faststart",
-        str(tmp),
-    ]  # fmt: skip
+    # -ss перед -i: быстрый переход к нужному месту; при перекодировании он точный до кадра.
+    args = ["-ss", f"{clip.start:.3f}", "-t", f"{clip.duration:.3f}", "-i", str(video)]
+    if edit.timeline.is_whole:
+        args += ["-map", "0:v:0", "-map", "0:a:0?"]
+    else:
+        graph = cut_filter(edit.timeline.relative_pieces(), has_audio)
+        args += ["-filter_complex", graph, "-map", "[v]"] + (["-map", "[a]"] if has_audio else [])
+    args += [*VIDEO_ARGS[encoder], "-pix_fmt", "yuv420p", *AUDIO_ARGS, "-movflags", "+faststart", str(tmp)]
     try:
         run_ffmpeg(ffmpeg, args, on_progress=on_progress, cancel=reporter.cancel, log_path=work_dir / LOG_FILENAME)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
     os.replace(tmp, target)
+
+
+def cut_filter(pieces: list[tuple[float, float]], audio: bool) -> str:
+    """filter_complex: оставить куски [a, b] (время от начала клипа) и склеить их.
+
+    На стыках звука — короткие фейды, иначе слышны щелчки.
+    """
+    count = len(pieces)
+    parts: list[str] = []
+    video_in = [f"[vi{i}]" for i in range(count)] if count > 1 else ["[0:v:0]"]
+    audio_in = [f"[ai{i}]" for i in range(count)] if count > 1 else ["[0:a:0]"]
+    if count > 1:
+        parts.append("[0:v:0]split=" + str(count) + "".join(video_in))
+        if audio:
+            parts.append("[0:a:0]asplit=" + str(count) + "".join(audio_in))
+    outputs = []
+    for i, (start, end) in enumerate(pieces):
+        parts.append(f"{video_in[i]}trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS[v{i}]")
+        outputs.append(f"[v{i}]")
+        if audio:
+            length = end - start
+            fade = round(min(FADE, length / 4), 3)
+            parts.append(
+                f"{audio_in[i]}atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS,"
+                f"afade=t=in:d={fade},afade=t=out:st={max(length - fade, 0):.3f}:d={fade}[a{i}]"
+            )
+            outputs.append(f"[a{i}]")
+    parts.append("".join(outputs) + f"concat=n={count}:v=1:a={1 if audio else 0}[v]" + ("[a]" if audio else ""))
+    return ";".join(parts)

@@ -349,12 +349,21 @@ def print_render(results: list[RenderResult], folder: Path) -> None:
     table.add_column("id", justify="right")
     table.add_column("Файл")
     table.add_column("Длина", justify="right")
+    cuts = any(r.removed > 0.05 for r in results)
+    if cuts:
+        table.add_column("Вырезано", justify="right")
     table.add_column("Статус", overflow="fold")
     for result in results:
         if result.path is not None:
-            table.add_row(str(result.clip_id), escape(result.path.name), f"{result.duration:.0f} с", "[green]готово[/]")
+            row = [str(result.clip_id), escape(result.path.name), f"{result.duration:.0f} с"]
+            if cuts:
+                fillers = f", паразиты: {result.fillers}" if result.fillers else ""
+                row.append(f"{result.removed:.1f} с{fillers}" if result.removed > 0.05 else "—")
+            table.add_row(*row, "[green]готово[/]")
         else:
-            table.add_row(str(result.clip_id), "—", "—", f"[red]ошибка:[/] {escape(result.error or '')}")
+            table.add_row(
+                str(result.clip_id), "—", "—", *(["—"] if cuts else []), f"[red]ошибка:[/] {escape(result.error or '')}"
+            )
     console.print()
     console.print(table)
     done = sum(r.path is not None for r in results)

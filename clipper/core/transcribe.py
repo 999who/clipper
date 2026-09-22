@@ -132,7 +132,7 @@ def transcribe_source(
         for start, end in todo:
             audio = read_audio(audio_path, start, end)
             try:
-                segments, info = engine.transcribe(audio, language=language, **WHISPER_OPTIONS)
+                segments, info = engine.transcribe(audio, language=language, **whisper_options(cfg, language))
                 if language is None:
                     language = info.language
                     reporter.info(f"Язык речи: {language} (уверенность {info.language_probability:.0%})")
@@ -157,7 +157,25 @@ def transcribe_source(
 
 def transcript_settings(cfg: Config) -> dict[str, Any]:
     """То, от чего зависит результат распознавания (compute_type на текст почти не влияет)."""
-    return {"model": MODEL_NAME, "language": cfg.transcribe.language, "version": SETTINGS_VERSION}
+    settings: dict[str, Any] = {"model": MODEL_NAME, "language": cfg.transcribe.language, "version": SETTINGS_VERSION}
+    if cfg.transcribe.verbatim:
+        settings["verbatim"] = True
+    return settings
+
+
+# Подсказка-«затравка» для Whisper: пример речи с паразитами. Без неё Whisper обычно
+# сам выбрасывает «эм» и «ээ» из текста — и вырезать их потом нечем.
+VERBATIM_PROMPTS = {
+    "ru": "Эм, ну, как бы, ээ... Мм, короче, вот. Ну, эм, в общем, так.",
+    "en": "Umm, let me think like, hmm... Okay, here's what I'm, like, thinking.",
+}
+
+
+def whisper_options(cfg: Config, language: str | None) -> dict[str, Any]:
+    options = dict(WHISPER_OPTIONS)
+    if cfg.transcribe.verbatim:
+        options["initial_prompt"] = VERBATIM_PROMPTS.get(language or "ru", VERBATIM_PROMPTS["ru"])
+    return options
 
 
 def add_range(transcript: Transcript, done: tuple[float, float], segments: list[Segment]) -> Transcript:

@@ -55,6 +55,7 @@ class TranscribeConfig:
     compute_type: Literal["float16", "int8_float16"] = "float16"
     margin: float = 5.0  # запас вокруг окон heatmap при распознавании, с
     model_dir: str | None = None  # None — кэш HuggingFace
+    verbatim: bool = False  # подсказать Whisper не выкидывать «эм», «ээ» (для remove_fillers)
 
 
 @dataclass
@@ -69,6 +70,7 @@ class SelectConfig:
 @dataclass
 class AudioConfig:
     cut_pauses: bool = False
+    pause_detect: Literal["volume", "words"] = "volume"  # по громкости или по промежуткам между словами
     silence_db: float = -35.0  # порог тишины, дБ
     min_pause: float = 0.6  # вырезаются паузы не короче этого, с
     remove_fillers: bool = False
