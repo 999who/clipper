@@ -28,7 +28,7 @@ def test_heatmap_peaks_skip_intro_merge_neighbours_and_keep_bounds():
     values[30] = 1.0
     values[70], values[72] = 0.8, 0.75  # два близких пика → один клип
     points = heatmap(values, 600.0)  # точки по 6 с
-    found = hl.heatmap_candidates(points, 600.0, count=5, min_len=20, max_len=60)
+    found = hl.heatmap_candidates(points, 600.0, count=2, min_len=20, max_len=60)
 
     assert len(found) == 2
     first, second = found
@@ -43,7 +43,7 @@ def test_heatmap_peaks_skip_intro_merge_neighbours_and_keep_bounds():
 def test_heatmap_peak_is_placed_at_forty_percent_of_short_window():
     values = [0.1] * 100
     values[50] = 1.0
-    (clip,) = hl.heatmap_candidates(heatmap(values, 300.0), 300.0, count=3, min_len=20, max_len=60)
+    (clip,) = hl.heatmap_candidates(heatmap(values, 300.0), 300.0, count=1, min_len=20, max_len=60)
     center = 50 * 3 + 1.5
     assert clip.length == pytest.approx(40.0)
     assert clip.start == pytest.approx(center - 0.4 * 40)
@@ -71,11 +71,32 @@ def test_heatmap_respects_count_and_edges():
     assert hl.heatmap_candidates([], 100.0, 3, 20, 60) == []
 
 
-def test_heatmap_ignores_small_bumps():
+def test_heatmap_small_bumps_are_not_peaks_but_fill_up_the_count():
     values = [0.1] * 100
     values[20] = 1.0
-    values[60] = 0.25  # меньше 30 % максимума
-    assert len(hl.heatmap_candidates(heatmap(values, 400.0), 400.0, count=5, min_len=20, max_len=60)) == 1
+    values[60] = 0.25  # меньше 30 % максимума — не пик
+    found = hl.heatmap_candidates(heatmap(values, 400.0), 400.0, count=3, min_len=20, max_len=60)
+    assert [c.reason for c in found if c.reason.startswith("пик")] == ["пик heatmap 1.00"]
+    assert len(found) == 3
+    assert any(c.start <= 60 * 4 < c.end and c.reason == "heatmap 0.25" for c in found)  # самое «горячее» после пика
+
+
+def test_heatmap_fills_requested_count_around_peaks():
+    """Пиков 3, просят 10: остальные клипы — из самых «горячих» мест, обычно рядом с пиками."""
+    values = [0.15] * 100
+    for peak in (20, 41, 45):
+        for offset, value in ((-2, 0.5), (-1, 0.8), (0, 1.0), (1, 0.8), (2, 0.5)):
+            values[peak + offset] = max(values[peak + offset], value if peak != 20 else value * 0.7)
+    duration = 7200.0  # 2 часа: точка — 72 с
+    found = hl.heatmap_candidates(heatmap(values, duration), duration, count=10, min_len=15, max_len=40)
+    assert len(found) == 10
+    assert sum(c.reason.startswith("пик") for c in found) == 3
+    assert [c.start for c in found] == sorted(c.start for c in found)
+    for a, b in zip(found, found[1:], strict=False):
+        assert b.start - a.end >= hl.MERGE_GAP  # не пересекаются и не слипаются
+    extra = [c for c in found if not c.reason.startswith("пик")]
+    assert min(c.score for c in extra) >= 0.5  # добраны из горячих мест, не из «ровного» фона
+    assert all(15 <= c.length <= 40 for c in found)
 
 
 # --- ключевые слова -------------------------------------------------------------------

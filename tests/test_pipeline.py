@@ -89,7 +89,7 @@ def setup(tmp_path, monkeypatch):
     cfg = load_config(
         None,
         {"paths.workdir": str(tmp_path / "work"), "paths.output": str(tmp_path / "out"), "select.min_len": 10,
-         "select.max_len": 20, "render.encoder": "x264"},
+         "select.max_len": 20, "select.clips": 2, "render.encoder": "x264"},
     )  # fmt: skip
     return cfg, source, speaker
 

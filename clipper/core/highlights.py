@@ -82,7 +82,45 @@ def heatmap_candidates(
         chosen.append(window)
         if len(chosen) >= count:
             break
+    if len(chosen) < count:
+        chosen += _hottest(points, values, chosen, count - len(chosen), duration, min_len, max_len)
     return sorted(chosen, key=lambda c: c.start)
+
+
+def _hottest(
+    points: list[HeatPoint],
+    values: list[float],
+    chosen: list[Candidate],
+    count: int,
+    duration: float,
+    min_len: float,
+    max_len: float,
+) -> list[Candidate]:
+    """Пиков меньше, чем просили, — добрать клипы из самых «горячих» мест графика.
+
+    Обычно это продолжение или начало тех же пиков: на длинном видео одна точка
+    heatmap — больше минуты, и интересное не помещается в один клип. Клипы не
+    пересекаются с уже выбранными (и между собой) ближе MERGE_GAP.
+    """
+    length = min(max((min_len + max_len) / 2, min_len), max_len)
+    taken = list(chosen)
+    extra: list[Candidate] = []
+    for index in sorted(range(1, len(points)), key=lambda i: (-values[i], i)):
+        if len(extra) >= count:
+            break
+        point = points[index]
+        # Точка длиннее клипа — пробуем несколько окон внутри неё, по порядку.
+        starts = [point.start + k * length for k in range(max(1, int((point.end - point.start) // length)))]
+        for start in starts or [point.start]:
+            if len(extra) >= count:
+                break
+            a, b = _fit(start, start + length, duration)
+            if any(a < c.end + MERGE_GAP and b > c.start - MERGE_GAP for c in taken):
+                continue
+            window = Candidate(round(a, 3), round(b, 3), round(values[index], 3), f"heatmap {values[index]:.2f}")
+            taken.append(window)
+            extra.append(window)
+    return extra
 
 
 def _peak_window(

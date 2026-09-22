@@ -98,7 +98,14 @@ def analyze(
         stage.update(len(candidates))
         stage.result = f"клипов: {len(clips)}"
     if len(clips) < select.clips:
-        reporter.info(f"Нашлось клипов: {len(clips)} из запрошенных {select.clips}.")
+        reporter.warning(
+            f"Нашлось клипов: {len(clips)} из запрошенных {select.clips}"
+            + (
+                " — видео слишком короткое для такого числа клипов."
+                if select.mode == "heatmap"
+                else " — ключевые слова звучат реже. Добавьте слова или уменьшите длину клипа."
+            )
+        )
 
     project = Project(
         source=_without_heatmap(source),
