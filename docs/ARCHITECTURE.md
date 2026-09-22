@@ -37,6 +37,7 @@ clipper/                      корень репозитория
 │  ├─ __main__.py             python -m clipper
 │  ├─ cli.py                  typer: команды и флаги → Config → вызов ядра
 │  ├─ console.py              rich: прогресс, таблицы, ошибки (слушает события ядра)
+│  ├─ tui/                    Textual: `clipper tui` (см. раздел TUI)
 │  ├─ core/                   ядро (без UI)
 │  │  ├─ config.py            Config + слияние defaults → yaml → флаги, валидация
 │  │  ├─ events.py            события прогресса, Reporter, CancelToken
@@ -393,6 +394,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | `clipper render` | → `output/<id>/clip_NN.mp4`; без `--project` берёт последний проект; `--clip 2,5`; субтитры: `--style`, `--max-words`, `--no-subs`; кадр: `--aspect`, `--crop`, `--background`, `--mode`, `--layout`; `--concat`, `--no-thumbnails`, `--out` | 3–7 ✅ |
 | `clipper run SRC` | analyze + render | 3 ✅ |
 | `clipper calibrate SRC` | кадр с сеткой для калибровки вебки (`--at`, `--layout`) | 6 ✅ |
+| `clipper tui` | всё то же стрелками и Enter: поиск моментов, правка клипов, рендер | TUI ✅ |
 
 Общие флаги у всех команд: `--config`, `--set key=value`, `-v`.
 
@@ -459,18 +461,52 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | 5 ✅ | субтитры | `clipper render` |
 | 6 ✅ | кроп, лицо, stream, calibrate | `clipper render --crop face`; `clipper calibrate FILE` |
 | 7 ✅ | склейка, обложки, `--out` | `clipper render --concat --out D:\clips` |
-| потом | TUI на Textual | — |
+| TUI ✅ | интерфейс в терминале | `clipper tui` |
 
-## Будущий TUI
+## TUI (`clipper tui`)
 
-TUI будет написан на Textual и появится поверх того же ядра:
-- экраны — отдельные классы;
-- навигация — стек экранов (`push_screen`/`pop_screen`);
-- привязки клавиш показываются в футере;
-- стили лежат в `.tcss`.
+Интерфейс в терминале на Textual поверх того же ядра. Всё делается стрелками
+и Enter, без команд. Ядро не менялось, кроме двух функций для экранов:
+`pipeline.list_projects` и `pipeline.save_edited_project`.
 
-Этому уже сейчас способствуют:
-- ядро не печатает и не читает ввод;
-- параметры — один `Config`, который можно показать формой;
-- прогресс идёт событиями, а отмена — через `CancelToken`;
-- долгие операции можно запускать в worker-потоке Textual.
+```
+clipper/tui/
+├─ __init__.py     run_tui: конфиг → приложение; stderr нативных библиотек → work/clipper-tui.log
+├─ app.py          ClipperApp: стек экранов, выход с остановкой задачи
+├─ settings.py     описание настроек форм (Setting/Section), SettingsStore, «то же в командной строке»
+├─ widgets.py      SettingsList (Enter — изменить), ChoiceModal, InputModal, MenuModal, heatmap_text
+├─ progress.py     ProgressScreen: задача ядра в потоке, этапы, лог, отмена
+├─ project.py      ProjectScreen (клипы), ClipModal (границы, вкл/выкл)
+├─ screens.py      Home, Projects, Analyze, Render, Results, Doctor
+├─ system.py       открыть файл или папку программой по умолчанию
+└─ clipper.tcss    стили
+```
+
+- **Экраны.**
+  - Главное меню: новое видео, продолжить последний проект, все проекты,
+    проверка окружения.
+  - «Новое видео» — форма `analyze`, дальше прогресс, потом экран проекта.
+  - Проект: полоса heatmap с отметками клипов, таблица клипов, текст выбранного.
+    Enter — окно клипа (вкл/выкл, начало и конец вводом или сдвигом на ±1 с),
+    пробел — вкл/выкл, `s` — сохранить, `r` — нарезать. Горячие клавиши работают
+    и в русской раскладке (`ы`, `к`, `щ`).
+  - Рендер — форма настроек, дальше прогресс, потом результаты (Enter на клипе —
+    открыть в плеере).
+- **Формы.** Каждая строка — параметр `Config`. Флаги и перечисления меняются
+  выбором из списка, числа и текст — в окне ввода. Проверка — тем же
+  `load_config`, что у флагов: неправильное значение не принимается, ошибка
+  показывается в окне. Под формой — пояснение к выбранной строке и та же
+  команда для CLI (только отличия от `clipper.yaml`).
+- **Настройки** живут до выхода (`SettingsStore`: `clipper.yaml` + `--set` при
+  запуске + выбранное в формах). В `clipper.yaml` TUI ничего не пишет, чтобы
+  не потерять ваши комментарии.
+- **Задачи** (`analyze`, `render`, doctor) идут в worker-потоке. События
+  `Reporter` → `app.call_from_thread` → строки этапов с полосами прогресса и лог.
+  Отмена — подтверждение, затем `CancelToken`, как Ctrl+C в CLI. Если были
+  предупреждения, экран ждёт «Дальше →», чтобы их можно было прочитать.
+- **Правка клипа** меняет только `project.json`, с копией в `project.prev.json`.
+  Перед рендером несохранённые правки сохраняются: рендер читает файл с диска.
+  Слова для новых границ берутся из `transcript.json`. Если часть клипа не
+  распознавалась, TUI предупреждает, что там не будет субтитров.
+- **Тесты** — `App.run_test()` без терминала: навигация, ввод и проверка значений,
+  правка и сохранение проекта, рендер с подменённым ядром, ошибки и отмена.

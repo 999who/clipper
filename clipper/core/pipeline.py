@@ -5,6 +5,7 @@
 """
 
 import shutil
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -180,6 +181,49 @@ def find_project(cfg: Config, project: str | None = None) -> Path:
         f"Проект не найден: {project}",
         hint="Укажите путь к project.json, папку work/<id> или просто id видео.",
     )
+
+
+@dataclass(frozen=True)
+class ProjectSummary:
+    """Проект в списке (главный экран TUI)."""
+
+    path: Path
+    title: str
+    clips: int
+    enabled: int
+    seconds: float  # общая длина включённых клипов
+    modified: float  # время изменения project.json (для сортировки)
+
+
+def list_projects(cfg: Config) -> list[ProjectSummary]:
+    """Все проекты в work/, свежие — первыми. Испорченные project.json пропускаются."""
+    root = Path(cfg.paths.workdir).resolve()
+    summaries = []
+    for path in root.glob(f"*/{PROJECT_FILENAME}"):
+        try:
+            project = load_project(path)
+            modified = path.stat().st_mtime
+        except (ProjectError, OSError):
+            continue
+        enabled = [c for c in project.clips if c.enabled]
+        summaries.append(
+            ProjectSummary(
+                path,
+                project.source.title or project.source.id,
+                len(project.clips),
+                len(enabled),
+                sum(c.duration for c in enabled),
+                modified,
+            )  # fmt: skip
+        )
+    return sorted(summaries, key=lambda s: s.modified, reverse=True)
+
+
+def save_edited_project(path: Path, project: Project) -> Path:
+    """Сохранить поправленный проект; прежняя версия — в project.prev.json."""
+    if path.exists():
+        shutil.copy2(path, path.parent / PREVIOUS_PROJECT)
+    return save_project(path.parent, project)
 
 
 def open_project(path: Path) -> Project:

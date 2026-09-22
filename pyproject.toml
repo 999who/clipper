@@ -29,6 +29,8 @@ dependencies = [
     "PyYAML>=6.0.2",
     "typer>=0.15",
     "rich>=13.8",
+    # Интерфейс в терминале: clipper tui.
+    "textual>=8.2",
 ]
 
 [project.optional-dependencies]
@@ -41,7 +43,7 @@ clipper = "clipper.cli:main"
 include = ["clipper*"]
 
 [tool.setuptools.package-data]
-clipper = ["styles/*.yaml", "fonts/*", "assets/*"]
+clipper = ["styles/*.yaml", "fonts/*", "assets/*", "tui/*.tcss"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

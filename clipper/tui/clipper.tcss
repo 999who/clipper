@@ -1,0 +1,142 @@
+Screen {
+    layout: vertical;
+}
+
+.screen-title {
+    padding: 1 2 0 2;
+    text-style: bold;
+}
+
+#intro {
+    padding: 1 2;
+}
+
+#menu, #projects {
+    margin: 0 2;
+    height: auto;
+    max-height: 1fr;
+    border: round $primary;
+}
+
+#settings {
+    margin: 1 2 0 2;
+    height: 1fr;
+    border: round $primary;
+}
+
+#help {
+    padding: 0 3;
+    height: auto;
+    color: $text-muted;
+}
+
+#command {
+    padding: 0 3;
+    height: auto;
+    max-height: 4;
+}
+
+#info, #detail {
+    padding: 0 2;
+    height: auto;
+}
+
+#heat {
+    margin: 0 2;
+    height: 2;
+}
+
+#clips, #results, #checks {
+    margin: 0 2;
+    height: 1fr;
+}
+
+#detail {
+    max-height: 4;
+    color: $text-muted;
+}
+
+#actions {
+    margin: 0 2;
+    height: auto;
+    border: round $primary;
+}
+
+#hints {
+    padding: 0 2;
+    height: auto;
+    max-height: 10;
+}
+
+/* прогресс */
+#stages {
+    margin: 1 2 0 2;
+    height: auto;
+    max-height: 50%;
+}
+
+.stage {
+    height: 1;
+}
+
+.stage-title {
+    width: 45%;
+}
+
+.stage-bar {
+    width: auto;
+}
+
+.stage-note {
+    margin-left: 2;
+    color: $text-muted;
+}
+
+#log {
+    margin: 1 2 0 2;
+    height: 1fr;
+    border: round $panel;
+}
+
+#error {
+    padding: 0 2;
+    height: auto;
+}
+
+/* окна */
+ModalScreen {
+    align: center middle;
+}
+
+.dialog {
+    width: 70;
+    max-width: 95%;
+    height: auto;
+    max-height: 90%;
+    padding: 1 2;
+    border: thick $primary;
+    background: $surface;
+}
+
+.dialog.wide {
+    width: 90;
+}
+
+.dialog OptionList {
+    height: auto;
+    max-height: 20;
+}
+
+.dialog-title {
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.dialog-help {
+    color: $text-muted;
+    margin: 0 2;
+}
+
+.dialog-error {
+    color: $error;
+}

@@ -635,6 +635,24 @@ def calibrate(
         print_calibrate(result)
 
 
+@app.command()
+def tui(
+    config: ConfigOption = None,
+    set_items: SetOption = None,
+    verbose: VerboseOption = False,
+) -> None:
+    """Интерфейс в терминале: все действия — стрелками и Enter, без команд."""
+    from clipper.tui import run_tui
+
+    try:  # без _command: его логи в консоль рисовались бы поверх экрана
+        run_tui(find_config_file(config), parse_set_options(set_items or []))
+    except ClipperError as exc:
+        print_error(exc)
+        if verbose:
+            console.print_exception()
+        raise typer.Exit(1) from None
+
+
 def main() -> None:
     setup_stdio()
     # Без аргументов — справка с кодом выхода 0 (click в этом случае возвращает 2).
