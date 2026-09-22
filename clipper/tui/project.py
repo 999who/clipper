@@ -17,6 +17,8 @@ from clipper.core import pipeline
 from clipper.core.errors import ClipperError
 from clipper.core.models import Clip, Project, Transcript, load_source, load_transcript, parse_time, subtract_ranges
 from clipper.core.render import output_dir
+from clipper.tui.progress import ProgressScreen
+from clipper.tui.settings import build_config
 from clipper.tui.system import open_path
 from clipper.tui.widgets import CANCEL, InputModal, MenuModal, heatmap_text, row
 
@@ -151,6 +153,7 @@ class ProjectScreen(Screen[Any]):
         Binding("s,ы", "save", "Сохранить"),
         Binding("r,к", "render", "Нарезать"),
         Binding("o,щ", "open_folder", "Папка"),
+        Binding("c,с", "count", "Сколько клипов"),
         Binding("escape", "back", "Назад"),
     ]
 
@@ -170,6 +173,7 @@ class ProjectScreen(Screen[Any]):
         yield Static("", id="detail")
         yield OptionList(
             Option(Text("▶ Нарезать клипы…", style="bold"), id="render"),
+            Option("Сколько клипов — найти заново…", id="count"),
             Option("Сохранить изменения", id="save"),
             Option("Открыть папку с клипами", id="folder"),
             Option("← Назад", id="back"),
@@ -310,8 +314,8 @@ class ProjectScreen(Screen[Any]):
     @on(OptionList.OptionSelected, "#actions")
     def _action(self, event: OptionList.OptionSelected) -> None:
         event.stop()
-        {"render": self.action_render, "save": self.action_save, "folder": self.action_open_folder,
-         "back": self.action_back}[event.option.id or "back"]()  # fmt: skip
+        {"render": self.action_render, "count": self.action_count, "save": self.action_save,
+         "folder": self.action_open_folder, "back": self.action_back}[event.option.id or "back"]()  # fmt: skip
 
     def action_render(self) -> None:
         from clipper.tui.screens import RenderScreen
@@ -324,6 +328,63 @@ class ProjectScreen(Screen[Any]):
         if self.dirty and not self.action_save():  # рендер читает project.json с диска
             return
         self.app.push_screen(RenderScreen(self.path, sum(c.enabled for c in self.project.clips)))
+
+    def action_count(self) -> None:
+        """Найти моменты в том же видео заново, с другим числом клипов."""
+        if self.project is None:
+            return
+        current = len(self.project.clips)
+
+        def validate(text: str) -> str | None:
+            try:
+                count = int(text.strip())
+            except ValueError:
+                return "Введите целое число, например 10."
+            return None if count >= 1 else "Нужен хотя бы 1 клип."
+
+        help_text = (
+            f"Сейчас клипов: {current}. Моменты найдутся заново в том же видео; уже распознанная речь "
+            "берётся из кэша. Ручные правки клипов пропадут (прежний файл — project.prev.json)."
+        )
+        modal = InputModal("Сколько клипов найти", str(current), help_text, validate)
+        self.app.push_screen(modal, self._recount)
+
+    def _recount(self, text: Any) -> None:
+        if text is CANCEL or self.project is None:
+            return
+        count = int(text.strip())
+        self.app.store.try_set("select.clips", count)
+        try:
+            cfg = build_config(self.app.store.path, {**self.app.store.overrides, **self._same_search(count)})
+        except ClipperError as exc:
+            self.app.notify(exc.message, severity="error")
+            return
+        source = self.project.source.input
+        job = ProgressScreen(f"Поиск моментов: {count}", lambda reporter: pipeline.analyze(source, cfg, reporter))
+        self.app.push_screen(job, self._recounted)
+
+    def _same_search(self, count: int) -> dict[str, Any]:
+        """Тот же режим и ключевые слова, что у проекта; язык и verbatim — как в кэше распознавания."""
+        assert self.project is not None
+        overrides: dict[str, Any] = {"select.clips": count, "select.mode": self.project.mode}
+        if self.project.keywords:
+            overrides["select.keywords"] = list(self.project.keywords)
+        transcript = load_transcript(self.path.parent)
+        if transcript is not None and transcript.settings:
+            overrides["transcribe.language"] = transcript.settings.get("language")
+            overrides["transcribe.verbatim"] = bool(transcript.settings.get("verbatim"))
+        return overrides
+
+    def _recounted(self, result: Any) -> None:
+        if not result:
+            return
+        _, path = result
+        self.path = Path(path)
+        self.project = pipeline.open_project(self.path)
+        self.transcript = None
+        self.dirty = False
+        self._fill()
+        self.app.notify(f"Клипов: {len(self.project.clips)}.")
 
     def action_open_folder(self) -> None:
         if self.project is None:

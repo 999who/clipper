@@ -31,6 +31,12 @@ CONFIG_FILENAME = "clipper.yaml"
 CONFIG_ENV_VAR = "CLIPPER_CONFIG"
 EXAMPLE_FILENAME = "clipper.example.yaml"
 
+# Параметры, которые были в прежних версиях, — понятная ошибка вместо «неизвестный параметр».
+REMOVED_KEYS = {
+    "render.thumbnails": "Обложки clip_NN.jpg больше не делаются — удалите эту строку из clipper.yaml.",
+    "render.concat": "Склейки клипов в один ролик больше нет — удалите эту строку из clipper.yaml.",
+}
+
 DEFAULT_FILLERS = ("эм", "эмм", "ээ", "эээ", "мм", "ммм", "хм", "ну", "как бы")
 
 
@@ -98,8 +104,6 @@ class ReframeConfig:
 @dataclass
 class RenderConfig:
     encoder: Literal["auto", "nvenc", "x264"] = "auto"
-    thumbnails: bool = True
-    concat: bool = False
 
 
 @dataclass
@@ -529,6 +533,8 @@ def _convert(value: Any, tp: Any, path: str) -> Any:
 def _unknown_key(key: str, cls: type, path: str) -> ConfigError:
     names = list(_field_types(cls))
     where = f"{path}.{key}" if path else key
+    if where in REMOVED_KEYS:
+        return ConfigError(f"параметр «{where}» больше не поддерживается", hint=REMOVED_KEYS[where])
     normalized = key.replace("-", "_")
     prefix = f"{path}." if path else ""
     candidates = [prefix + name for name in difflib.get_close_matches(normalized, names, n=1, cutoff=0.6)]

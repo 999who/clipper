@@ -56,7 +56,6 @@ clipper/                      корень репозитория
 │  │  ├─ reframe.py           этап 6: геометрия кадра (video / stream)
 │  │  ├─ facetrack.py         этап 6: слежение за лицом (mediapipe)
 │  │  ├─ render.py            этапы 3–6: граф ffmpeg клипа, кодирование
-│  │  ├─ extras.py            этап 7: обложки, склейка
 │  │  └─ calibrate.py         этап 6
 │  ├─ styles/capcut.yaml      этап 5
 │  ├─ fonts/                  этап 5: Montserrat Black + OFL.txt
@@ -363,23 +362,11 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 - **Кодирование:** H.264 + AAC, `yuv420p`, `+faststart`. `--encoder auto`
   выбирает NVENC, если тестовое кодирование прошло, иначе libx264.
 
-### 7. Дополнительно (`extras.py`)
-- **Обложка** `clip_NN.jpg` (`render.thumbnails`, `--no-thumbnails`) — из готового
-  клипа, то есть уже с кадром 1080×1920:
-  - кандидаты — 8 моментов, равномерно по 10–90 % длины клипа, в уменьшенном виде
-    270×480, оттенки серого;
-  - резкость — дисперсия дискретного лапласиана (numpy) по верхним 60 % кадра:
-    субтитры в нижней трети не влияют на выбор;
-  - кадры со средней яркостью < 16 или > 240 (затемнения, вспышки) пропускаются;
-  - в приоритете моменты, когда субтитров на экране нет (интервалы берутся из
-    `.ass` клипа). Если таких нет — просто самый резкий.
-
-  Ошибка обложки — предупреждение, клип остаётся готовым.
-- **Склейка** `all_clips.mp4` (`render.concat`, `--concat`) — клипы этого рендера по
-  порядку проекта, concat demuxer (`ffconcat`, абсолютные пути, `-safe 0`)
-  без перекодирования: все клипы одного рендера закодированы одинаково. Меньше
-  двух готовых клипов — склейки нет (сообщение), ошибка склейки — предупреждение.
-- **`--out`** задаёт папку вывода (`paths.output`): клипы лежат в `<out>/<id>/`.
+### 7. Дополнительно
+- `--out` задаёт папку вывода (`paths.output`): клипы лежат в `<out>/<id>/`.
+- Обложки `clip_NN.jpg` и склейка клипов в один ролик были, но убраны по
+  решению пользователя. Старые ключи `render.thumbnails` и `render.concat` в
+  `clipper.yaml` дают понятную ошибку с подсказкой (`config.REMOVED_KEYS`).
 
 ## Команды CLI
 
@@ -391,7 +378,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | `clipper download SRC` | загрузка видео и heatmap, мини-график в терминале | 1 ✅ |
 | `clipper transcribe SRC` | распознавание (`--lang`, `--from`/`--to`) + `.srt` для проверки в плеере | 2 ✅ |
 | `clipper analyze SRC` | → `work/<id>/project.json` + таблица найденных клипов | 3 ✅ |
-| `clipper render` | → `output/<id>/clip_NN.mp4`; без `--project` берёт последний проект; `--clip 2,5`; субтитры: `--style`, `--max-words`, `--no-subs`; кадр: `--aspect`, `--crop`, `--background`, `--mode`, `--layout`; `--concat`, `--no-thumbnails`, `--out` | 3–7 ✅ |
+| `clipper render` | → `output/<id>/clip_NN.mp4`; без `--project` берёт последний проект; `--clip 2,5`; субтитры: `--style`, `--max-words`, `--no-subs`; кадр: `--aspect`, `--crop`, `--background`, `--mode`, `--layout`; `--out` | 3–7 ✅ |
 | `clipper run SRC` | analyze + render | 3 ✅ |
 | `clipper calibrate SRC` | кадр с сеткой для калибровки вебки (`--at`, `--layout`) | 6 ✅ |
 | `clipper tui` | всё то же стрелками и Enter: поиск моментов, правка клипов, рендер | TUI ✅ |
@@ -460,7 +447,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | 4 ✅ | паузы, слова-паразиты | `clipper render --cut-pauses --remove-fillers` |
 | 5 ✅ | субтитры | `clipper render` |
 | 6 ✅ | кроп, лицо, stream, calibrate | `clipper render --crop face`; `clipper calibrate FILE` |
-| 7 ✅ | склейка, обложки, `--out` | `clipper render --concat --out D:\clips` |
+| 7 ✅ | `--out` | `clipper render --out D:\clips` |
 | TUI ✅ | интерфейс в терминале | `clipper tui` |
 
 ## TUI (`clipper tui`)
@@ -488,8 +475,10 @@ clipper/tui/
   - «Новое видео» — форма `analyze`, дальше прогресс, потом экран проекта.
   - Проект: полоса heatmap с отметками клипов, таблица клипов, текст выбранного.
     Enter — окно клипа (вкл/выкл, начало и конец вводом или сдвигом на ±1 с),
-    пробел — вкл/выкл, `s` — сохранить, `r` — нарезать. Горячие клавиши работают
-    и в русской раскладке (`ы`, `к`, `щ`).
+    пробел — вкл/выкл, `s` — сохранить, `r` — нарезать, `c` — «сколько клипов»:
+    ввести число и найти моменты заново в том же видео (тот же режим и ключевые
+    слова; язык и verbatim — из `transcript.json`, чтобы кэш распознавания
+    подошёл). Горячие клавиши работают и в русской раскладке (`ы`, `к`, `щ`, `с`).
   - Рендер — форма настроек, дальше прогресс, потом результаты (Enter на клипе —
     открыть в плеере).
 - **Формы.** Каждая строка — параметр `Config`. Флаги и перечисления меняются

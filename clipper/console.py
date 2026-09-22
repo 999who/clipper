@@ -405,8 +405,6 @@ def print_render(results: list[RenderResult], folder: Path) -> None:
     console.print()
     console.print(table)
     done = sum(r.path is not None for r in results)
-    if any(r.thumbnail for r in results):
-        console.print("[dim]Обложки clip_NN.jpg лежат рядом с клипами.[/]")
     color = "green" if done == len(results) else "yellow"
     console.print(f"[{color}]Готово клипов: {done} из {len(results)}[/] — {escape(str(folder))}")
 

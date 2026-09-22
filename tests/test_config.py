@@ -246,3 +246,12 @@ def test_write_example_config(tmp_path):
     with pytest.raises(ConfigError, match="уже существует"):
         write_example_config(dest)
     write_example_config(dest, overwrite=True)
+
+
+def test_removed_parameters_explain_themselves(tmp_path):
+    path = tmp_path / "clipper.yaml"
+    path.write_text("render:\n  concat: true\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as info:
+        load_config(path)
+    assert "render.concat" in info.value.message and "больше не поддерживается" in info.value.message
+    assert "удалите эту строку" in (info.value.hint or "")

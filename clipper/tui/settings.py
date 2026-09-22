@@ -90,8 +90,6 @@ RENDER: tuple[Item, ...] = (
     Setting("subtitles.max_words", "Слов на экране", "choice",
             ((None, "как в стиле"), (1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")), flag="--max-words"),
     Section("Файлы"),
-    Setting("render.thumbnails", "Обложки clip_NN.jpg", "bool", flag="--thumbnails/--no-thumbnails"),
-    Setting("render.concat", "Склеить клипы в один ролик", "bool", flag="--concat/--no-concat"),
     Setting("render.encoder", "Кодировщик", "choice",
             (("auto", "авто (NVENC, если работает)"), ("nvenc", "NVENC — видеокарта"), ("x264", "x264 — процессор")),
             flag="--encoder"),

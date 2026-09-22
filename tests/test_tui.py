@@ -274,3 +274,43 @@ def test_cli_has_tui_command():
 
     result = CliRunner().invoke(cli.app, ["tui", "--help"])
     assert result.exit_code == 0 and "стрелками и Enter" in result.output
+
+
+def test_project_recount_reuses_search_and_transcript_settings(tmp_path, monkeypatch):
+    from clipper.core.models import Transcript, save_transcript
+
+    project_path = make_project(tmp_path)
+    save_transcript(project_path.parent, Transcript("ru", {"language": "ru", "verbatim": True}, [], []))
+    seen = {}
+
+    def fake_analyze(source, cfg, reporter, **kwargs):
+        seen.update(source=source, clips=cfg.select.clips, mode=cfg.select.mode, lang=cfg.transcribe.language,
+                    verbatim=cfg.transcribe.verbatim)  # fmt: skip
+        project = pipeline.open_project(project_path)
+        project.clips = [Clip(i, i * 60.0, i * 60.0 + 30) for i in range(1, cfg.select.clips + 1)]
+        save_project(project_path.parent, project)
+        return project, project_path
+
+    monkeypatch.setattr(pipeline, "analyze", fake_analyze)
+
+    async def scenario():
+        app = ClipperApp(make_store(tmp_path))
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            app.push_screen(ProjectScreen(project_path))
+            await pilot.pause()
+            screen = app.screen
+            await pilot.press("c")
+            assert isinstance(app.screen, InputModal)
+            await pilot.press("0", "enter")  # не число клипов
+            await pilot.pause()
+            assert "хотя бы 1" in str(app.screen.query_one("#error").render())
+            await pilot.press("backspace", "7", "enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.screen is screen
+            assert "Клипов: 7" in str(screen.query_one("#info").render())
+            assert app.store.value("select.clips") == 7
+
+    run(scenario())
+    assert seen == {"source": "v.mp4", "clips": 7, "mode": "heatmap", "lang": "ru", "verbatim": True}

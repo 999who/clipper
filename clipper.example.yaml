@@ -63,11 +63,9 @@
 #   detector: yunet          # детектор лиц для crop: face — yunet (OpenCV, находит и небольшие лица)
 #                            # или mediapipe (BlazeFace: только крупные лица, как в селфи)
 
-# Этапы 6–7 — рендер.
+# Рендер.
 # render:
 #   encoder: auto            # auto — NVENC, если работает, иначе libx264; nvenc | x264
-#   thumbnails: true         # обложка clip_NN.jpg для каждого клипа
-#   concat: false            # дополнительно склеить все клипы в один ролик
 
 # Пресеты компоновки для режима stream: --mode stream --layout my_setup
 # Координаты вебки — в пикселях исходного кадра. Снять их удобно по кадру
