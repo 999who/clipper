@@ -425,6 +425,17 @@ LayoutOption = Annotated[
                  show_default=False, rich_help_panel=PANEL_FRAME),
 ]  # fmt: skip
 
+ConcatOption = Annotated[
+    Optional[bool],
+    typer.Option("--concat/--no-concat", help="Ещё и склеить все клипы в один ролик all_clips.mp4.",
+                 show_default=False, rich_help_panel=PANEL_RENDER),
+]  # fmt: skip
+ThumbnailsOption = Annotated[
+    Optional[bool],
+    typer.Option("--thumbnails/--no-thumbnails", help="Обложка clip_NN.jpg для каждого клипа (по умолчанию да).",
+                 show_default=False, rich_help_panel=PANEL_RENDER),
+]  # fmt: skip
+
 
 def _frame_flags(mode, aspect, crop, background, layout) -> dict[str, Any]:
     flags = {
@@ -506,6 +517,8 @@ def render(
     clip: ClipOption = None,
     encoder: EncoderOption = None,
     out: OutOption = None,
+    concat: ConcatOption = None,
+    thumbnails: ThumbnailsOption = None,
     cut_pauses: CutPausesOption = None,
     pause_detect: PauseDetectOption = None,
     silence_db: SilenceDbOption = None,
@@ -525,7 +538,12 @@ def render(
 ) -> None:
     """Нарезать клипы по project.json → output/<id>/clip_NN.mp4."""
     with _command(verbose) as token:
-        flags = {"render.encoder": encoder, "paths.output": out}
+        flags = {
+            "render.encoder": encoder,
+            "paths.output": out,
+            "render.concat": concat,
+            "render.thumbnails": thumbnails,
+        }
         flags.update(_audio_flags(cut_pauses, pause_detect, silence_db, min_pause, fillers))
         flags.update(_subs_flags(subs, style, max_words))
         flags.update(_frame_flags(frame_mode, aspect, crop, background, layout))
@@ -550,6 +568,8 @@ def run(
     force: ForceOption = False,
     encoder: EncoderOption = None,
     out: OutOption = None,
+    concat: ConcatOption = None,
+    thumbnails: ThumbnailsOption = None,
     cut_pauses: CutPausesOption = None,
     pause_detect: PauseDetectOption = None,
     silence_db: SilenceDbOption = None,
@@ -571,7 +591,8 @@ def run(
     with _command(verbose) as token:
         flags = _select_flags(mode, keywords, clips, min_len, max_len, lang)
         flags["transcribe.verbatim"] = verbatim
-        flags.update({"render.encoder": encoder, "paths.output": out})
+        flags.update({"render.encoder": encoder, "paths.output": out, "render.concat": concat,
+                      "render.thumbnails": thumbnails})  # fmt: skip
         flags.update(_audio_flags(cut_pauses, pause_detect, silence_db, min_pause, fillers))
         flags.update(_subs_flags(subs, style, max_words))
         flags.update(_frame_flags(frame_mode, aspect, crop, background, layout))

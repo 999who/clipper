@@ -54,7 +54,8 @@ clipper/                      корень репозитория
 │  │  ├─ subtitles.py         этап 5
 │  │  ├─ reframe.py           этап 6: геометрия кадра (video / stream)
 │  │  ├─ facetrack.py         этап 6: слежение за лицом (mediapipe)
-│  │  ├─ render.py            этапы 6–7: filtergraph, кодирование, превью, склейка
+│  │  ├─ render.py            этапы 3–6: граф ffmpeg клипа, кодирование
+│  │  ├─ extras.py            этап 7: обложки, склейка
 │  │  └─ calibrate.py         этап 6
 │  ├─ styles/capcut.yaml      этап 5
 │  ├─ fonts/                  этап 5: Montserrat Black + OFL.txt
@@ -361,11 +362,23 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 - **Кодирование:** H.264 + AAC, `yuv420p`, `+faststart`. `--encoder auto`
   выбирает NVENC, если тестовое кодирование прошло, иначе libx264.
 
-### 7. Дополнительно
-- `--concat` склеивает клипы в один ролик без перекодирования.
-- Для каждого клипа сохраняется обложка `clip_NN.jpg` — самый резкий из
-  нескольких кадров.
-- `--out` задаёт папку вывода (`paths.output`).
+### 7. Дополнительно (`extras.py`)
+- **Обложка** `clip_NN.jpg` (`render.thumbnails`, `--no-thumbnails`) — из готового
+  клипа, то есть уже с кадром 1080×1920:
+  - кандидаты — 8 моментов, равномерно по 10–90 % длины клипа, в уменьшенном виде
+    270×480, оттенки серого;
+  - резкость — дисперсия дискретного лапласиана (numpy) по верхним 60 % кадра:
+    субтитры в нижней трети не влияют на выбор;
+  - кадры со средней яркостью < 16 или > 240 (затемнения, вспышки) пропускаются;
+  - в приоритете моменты, когда субтитров на экране нет (интервалы берутся из
+    `.ass` клипа). Если таких нет — просто самый резкий.
+
+  Ошибка обложки — предупреждение, клип остаётся готовым.
+- **Склейка** `all_clips.mp4` (`render.concat`, `--concat`) — клипы этого рендера по
+  порядку проекта, concat demuxer (`ffconcat`, абсолютные пути, `-safe 0`)
+  без перекодирования: все клипы одного рендера закодированы одинаково. Меньше
+  двух готовых клипов — склейки нет (сообщение), ошибка склейки — предупреждение.
+- **`--out`** задаёт папку вывода (`paths.output`): клипы лежат в `<out>/<id>/`.
 
 ## Команды CLI
 
@@ -377,7 +390,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | `clipper download SRC` | загрузка видео и heatmap, мини-график в терминале | 1 ✅ |
 | `clipper transcribe SRC` | распознавание (`--lang`, `--from`/`--to`) + `.srt` для проверки в плеере | 2 ✅ |
 | `clipper analyze SRC` | → `work/<id>/project.json` + таблица найденных клипов | 3 ✅ |
-| `clipper render` | → `output/<id>/clip_NN.mp4`; без `--project` берёт последний проект; `--clip 2,5`; субтитры: `--style`, `--max-words`, `--no-subs`; кадр: `--aspect`, `--crop`, `--background`, `--mode`, `--layout` | 3–6 ✅ |
+| `clipper render` | → `output/<id>/clip_NN.mp4`; без `--project` берёт последний проект; `--clip 2,5`; субтитры: `--style`, `--max-words`, `--no-subs`; кадр: `--aspect`, `--crop`, `--background`, `--mode`, `--layout`; `--concat`, `--no-thumbnails`, `--out` | 3–7 ✅ |
 | `clipper run SRC` | analyze + render | 3 ✅ |
 | `clipper calibrate SRC` | кадр с сеткой для калибровки вебки (`--at`, `--layout`) | 6 ✅ |
 
@@ -445,7 +458,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | 4 ✅ | паузы, слова-паразиты | `clipper render --cut-pauses --remove-fillers` |
 | 5 ✅ | субтитры | `clipper render` |
 | 6 ✅ | кроп, лицо, stream, calibrate | `clipper render --crop face`; `clipper calibrate FILE` |
-| 7 | склейка, обложки, `--out` | `clipper render --concat --out D:\clips` |
+| 7 ✅ | склейка, обложки, `--out` | `clipper render --concat --out D:\clips` |
 | потом | TUI на Textual | — |
 
 ## Будущий TUI

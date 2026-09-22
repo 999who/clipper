@@ -8,6 +8,8 @@
 - Кадр (этап 6): окно 9:16/1:1 за лицом или по центру, фон для 1:1 и original,
   режим stream — вебка сверху, игра снизу. Траектория окна — файл sendcmd.
 - Субтитры (этап 5) накладываются на готовый кадр 1080×1920.
+- После клипа — обложка clip_NN.jpg, после всех клипов — склейка all_clips.mp4
+  (этап 7, extras.py).
 
 .ass, файл sendcmd и шрифты лежат в work/<id>/tmp/; ffmpeg запускается из этой
 папки и получает относительные пути — на Windows так не нужно экранировать «C:».
@@ -69,6 +71,7 @@ class RenderResult:
     fillers: int = 0  # сколько слов-паразитов вырезано
     subtitles: bool = False  # наложены ли субтитры
     frame: str = ""  # как поставлено окно: «лицо в 85 % кадров», «по центру»
+    thumbnail: Path | None = None  # обложка clip_NN.jpg
 
 
 @dataclass(frozen=True)
@@ -175,9 +178,12 @@ def render_project(
                     f"{target.name} открыт в другой программе (плеер?) и не заменён — новый клип сохранён как "
                     f"{saved.name}. Закройте файл, чтобы в следующий раз он перезаписался."
                 )
+            thumbnail = None
+            if cfg.render.thumbnails:
+                thumbnail = clip_thumbnail(ffmpeg.path, saved, length, ass, work_dir, reporter)
             results.append(
                 RenderResult(clip.id, saved, duration=length, removed=edit.timeline.removed, fillers=len(edit.fillers),
-                             subtitles=ass is not None, frame=frame.notes.get(clip.id, ""))
+                             subtitles=ass is not None, frame=frame.notes.get(clip.id, ""), thumbnail=thumbnail)
             )  # fmt: skip
             if not edit.timeline.is_whole and length < cfg.select.min_len:
                 reporter.warning(
@@ -192,7 +198,60 @@ def render_project(
         reporter.warning(pause_hint(levels, cfg.audio.silence_db))
     if frame.detector_error:
         reporter.warning(f"Слежение за лицом не работает — кроп по центру. {frame.detector_error}")
+    if cfg.render.concat:
+        concat_results(results, out, ffmpeg.path, work_dir, reporter)
     return results
+
+
+# --- обложки и склейка (этап 7) -----------------------------------------------------------
+
+
+def clip_thumbnail(
+    ffmpeg: str, video: Path, length: float, ass: Path | None, work_dir: Path, reporter: Reporter
+) -> Path | None:
+    """Обложка clip_NN.jpg рядом с клипом. Ошибка — предупреждение, клип остаётся готовым."""
+    from clipper.core.extras import make_thumbnail
+
+    target = video.with_name(video.name.split(".")[0] + ".jpg")
+    try:
+        path, _ = make_thumbnail(
+            ffmpeg, video, length, target, ass=ass, log_path=work_dir / LOG_FILENAME, cancel=reporter.cancel
+        )
+    except (ClipperError, OSError) as exc:
+        reporter.warning(f"Обложка для {video.name} не получилась: {getattr(exc, 'message', exc)}")
+        return None
+    return path
+
+
+def concat_results(
+    results: list[RenderResult], out: Path, ffmpeg: str, work_dir: Path, reporter: Reporter
+) -> Path | None:
+    """Склеить готовые клипы этого рендера в all_clips.mp4 (по порядку проекта)."""
+    from clipper.core.extras import CONCAT_NAME, concat_clips
+
+    done = [r for r in results if r.path is not None]
+    if len(done) < 2:
+        reporter.info("Склейка: нужно хотя бы два готовых клипа.")
+        return None
+    if len(done) < len(results):
+        reporter.warning("Не все клипы получились — склеиваю только готовые.")
+    total = sum(r.duration for r in done)
+    try:
+        with reporter.stage("concat", f"Склейка {len(done)} клипов", total=total, unit="seconds") as stage:
+            path = concat_clips(
+                ffmpeg, [r.path for r in done if r.path], out / CONCAT_NAME, Path(work_dir).resolve() / TMP_DIRNAME,
+                on_progress=stage.update, log_path=work_dir / LOG_FILENAME, cancel=reporter.cancel,
+            )  # fmt: skip
+            stage.result = f"{path.name}, {_clock(total)}"
+    except (ClipperError, OSError) as exc:
+        reporter.warning(f"Склейка не получилась: {getattr(exc, 'message', exc)}")
+        return None
+    return path
+
+
+def _clock(seconds: float) -> str:
+    minutes, secs = divmod(int(round(seconds)), 60)
+    return f"{minutes}:{secs:02d}"
 
 
 # --- кадр ------------------------------------------------------------------------------
