@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# Рабочие данные clipper
+/work/
+/output/
+*.log
+
+# Личный конфиг (создаётся командой clipper config --init из clipper.example.yaml)
+/clipper.yaml

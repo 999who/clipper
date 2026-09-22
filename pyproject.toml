@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clipper"
+version = "0.1.0"
+description = "Нарезка вертикальных клипов с субтитрами из длинных видео и стримов — локально, без LLM"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Загрузка с YouTube. default — вспомогательные пакеты (в том числе yt-dlp-ejs),
+    # deno — JS-движок, без которого YouTube отдаёт не все форматы.
+    "yt-dlp[default,deno]>=2026.8.19",
+    # Распознавание речи: large-v3 на видеокарте.
+    "faster-whisper>=1.2",
+    "ctranslate2>=4.5",  # 4.5+ работает с CUDA 12 и cuDNN 9
+    # Библиотеки CUDA для ctranslate2. На Windows их не ставит ни faster-whisper,
+    # ни драйвер. Если CUDA 12 и cuDNN 9 уже стоят в системе, эти пакеты можно удалить.
+    "nvidia-cublas-cu12>=12.4; sys_platform == 'win32'",
+    "nvidia-cudnn-cu12>=9,<10; sys_platform == 'win32'",
+    # Слежение за лицом. mediapipe сам требует opencv-contrib-python:
+    # отдельный opencv-python ставить нельзя — оба пакета пишут в модуль cv2.
+    "mediapipe>=0.10.20",
+    "opencv-contrib-python>=4.10",
+    "numpy>=1.26",
+    # Субтитры, конфиг, командная строка.
+    "pysubs2>=1.7",
+    "PyYAML>=6.0.2",
+    "typer>=0.15",
+    "rich>=13.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+clipper = "clipper.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["clipper*"]
+
+[tool.setuptools.package-data]
+clipper = ["styles/*.yaml", "fonts/*", "assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "SIM"]
+ignore = ["UP007", "UP045"]  # Optional[...] в сигнатурах typer оставляем явным

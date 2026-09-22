@@ -1,0 +1,225 @@
+"""Вывод в терминал через rich: прогресс этапов, таблицы, ошибки.
+
+Здесь только отображение. Логика живёт в clipper.core, а её события приходят
+в ConsoleSink. Символы подобраны из базового набора шрифтов Windows (WGL4),
+чтобы они не превращались в квадратики в старой консоли.
+"""
+
+import contextlib
+import logging
+import sys
+from pathlib import Path
+from types import TracebackType
+from typing import Any
+
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.markup import escape
+from rich.progress import (
+    BarColumn,
+    Progress,
+    ProgressColumn,
+    SpinnerColumn,
+    Task,
+    TaskID,
+    TextColumn,
+    TimeElapsedColumn,
+)
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.text import Text
+
+from clipper.core.doctor import CheckResult
+from clipper.core.errors import ClipperError
+from clipper.core.events import Event, Message, StageFinished, StageProgress, StageStarted
+
+console = Console(highlight=False)
+
+
+def setup_stdio() -> None:
+    """UTF-8 для вывода, даже если его перенаправили в файл (иначе на Windows — cp1251)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            with contextlib.suppress(ValueError, OSError):
+                reconfigure(encoding="utf-8", errors="replace")
+
+
+def setup_logging(verbose: bool) -> None:
+    """Технические логи ядра: с -v подробно, без -v — только предупреждения библиотек."""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.WARNING,
+        format="%(name)s: %(message)s",
+        handlers=[RichHandler(console=Console(stderr=True), show_time=False, show_path=False, markup=False)],
+        force=True,
+    )
+
+
+# --- Прогресс -----------------------------------------------------------------------
+
+
+class _AmountColumn(ProgressColumn):
+    """«12.3/45.6 МБ», «01:23/05:00» или «2/5» — в зависимости от единиц этапа."""
+
+    def render(self, task: Task) -> Text:
+        unit = task.fields.get("unit", "")
+        done, total = task.completed, task.total
+        if unit == "bytes":
+            text = f"{_mb(done)}/{_mb(total)} МБ" if total else f"{_mb(done)} МБ"
+        elif unit == "seconds":
+            text = f"{_clock(done)}/{_clock(total)}" if total else _clock(done)
+        else:
+            text = f"{done:g}/{total:g}" if total else ""
+        return Text(text, style="progress.download")
+
+
+class ConsoleSink:
+    """Показывает события ядра в терминале. Использовать как контекстный менеджер."""
+
+    def __init__(self, target: Console = console) -> None:
+        self._progress = Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            _AmountColumn(),
+            TimeElapsedColumn(),
+            TextColumn("[dim]{task.fields[message]}"),
+            console=target,
+            transient=True,
+        )
+        self._tasks: dict[str, TaskID] = {}
+        self._titles: dict[str, str] = {}
+
+    def __enter__(self) -> "ConsoleSink":
+        self._progress.start()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self._progress.stop()
+
+    def __call__(self, event: Event) -> None:
+        out = self._progress.console
+        if isinstance(event, StageStarted):
+            self._titles[event.stage] = event.title
+            self._tasks[event.stage] = self._progress.add_task(
+                escape(event.title), total=event.total, unit=event.unit, message=""
+            )
+        elif isinstance(event, StageProgress):
+            task = self._tasks.get(event.stage)
+            if task is not None:
+                self._progress.update(task, completed=event.done, total=event.total, message=escape(event.message))
+        elif isinstance(event, StageFinished):
+            task = self._tasks.pop(event.stage, None)
+            if task is not None:
+                self._progress.remove_task(task)
+            title = escape(self._titles.pop(event.stage, event.stage))
+            if event.ok:
+                result = f" — {escape(event.message)}" if event.message else ""
+                out.print(f"[green]●[/] {title}{result} [dim]({_duration(event.elapsed)})[/]")
+            else:
+                reason = "отменено" if event.message == "отменено" else "ошибка"
+                out.print(f"[red]●[/] {title} — {reason}")
+        elif isinstance(event, Message):
+            if event.level == "warning":
+                out.print(f"[yellow]Внимание:[/] {escape(event.text)}")
+            else:
+                out.print(escape(event.text))
+
+
+# --- Ошибки ---------------------------------------------------------------------------
+
+
+def print_error(exc: ClipperError) -> None:
+    console.print(f"[bold red]Ошибка:[/] {escape(exc.message)}")
+    if exc.hint:
+        console.print(f"[yellow]→[/] {_indent(escape(exc.hint))}")
+
+
+# --- doctor ---------------------------------------------------------------------------
+
+_STATUS = {
+    "ok": "[green]ОК[/]",
+    "warn": "[yellow]ВНИМАНИЕ[/]",
+    "fail": "[red]ОШИБКА[/]",
+    "info": "[dim]—[/]",
+}
+
+
+def print_doctor(results: list[CheckResult]) -> None:
+    table = Table(show_header=True, header_style="bold", show_lines=False)
+    table.add_column("Проверка", no_wrap=True)
+    table.add_column("Статус", no_wrap=True)
+    table.add_column("Подробности", overflow="fold")
+    group = None
+    for result in results:
+        if result.group != group:
+            if group is not None:
+                table.add_section()
+            table.add_row(f"[bold]{escape(result.group)}[/]", "", "")
+            group = result.group
+        table.add_row("  " + escape(result.name), _STATUS[result.status], escape(result.detail))
+    console.print(table)
+
+    todo = [r for r in results if r.hint and r.status != "ok"]
+    if todo:
+        console.print("\n[bold]Что сделать:[/]")
+        for result in todo:
+            console.print(f"  • [bold]{escape(result.name)}[/]: {_indent(escape(result.hint or ''), 4)}")
+
+    fails = sum(r.status == "fail" for r in results)
+    warns = sum(r.status == "warn" for r in results)
+    console.print()
+    if fails:
+        extra = f", предупреждений: {warns}" if warns else ""
+        console.print(f"[red]Проблем, которые мешают работе: {fails}[/]{extra}")
+    elif warns:
+        console.print(f"[yellow]Работать можно, но есть предупреждения: {warns}[/]")
+    else:
+        console.print("[green]Всё готово к работе.[/]")
+
+
+# --- config ---------------------------------------------------------------------------
+
+
+def print_config(config_yaml: str, path: Path | None, overridden: dict[str, Any]) -> None:
+    if path is not None:
+        console.print(f"Файл конфига: [bold]{escape(str(path.resolve()))}[/]")
+    else:
+        console.print(
+            "Файл конфига не найден — используются значения по умолчанию. "
+            "Создать файл с комментариями: [bold]clipper config --init[/]"
+        )
+    if overridden:
+        console.print("Из командной строки: " + escape(", ".join(overridden)))
+    console.print()
+    console.print(Syntax(config_yaml, "yaml", theme="ansi_dark", background_color="default", word_wrap=True))
+
+
+# --- Форматирование ------------------------------------------------------------------
+
+
+def _mb(size: float | None) -> str:
+    return f"{(size or 0) / 1_000_000:.1f}"
+
+
+def _clock(seconds: float | None) -> str:
+    total = int(seconds or 0)
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
+
+
+def _duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.1f} с"
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes} мин {secs:02d} с"
+
+
+def _indent(text: str, spaces: int = 2) -> str:
+    return text.replace("\n", "\n" + " " * spaces)
