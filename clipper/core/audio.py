@@ -33,6 +33,7 @@ from clipper.core.timeline import Timeline
 
 PAUSE_KEEP = 0.12  # с: столько паузы остаётся с каждой стороны
 FILLER_PAD = 0.04  # с: запас вокруг слова-паразита (не залезая в соседние слова)
+NOISY_FLOOR = -30  # дБ: если тишина не опускается ниже, советуем искать паузы по словам
 MAX_PIECES = 60  # больше кусков ffmpeg-граф не усложняем: самые короткие паузы остаются
 
 _SILENCE_START = re.compile(r"silence_start:\s*(-?[\d.]+)")
@@ -195,14 +196,14 @@ def window_min_peak(samples, rate: int, window: float) -> float | None:
 def pause_hint(levels: dict[int, float], silence_db: float) -> str:
     """Подсказка, когда по громкости пауз не нашлось: {id клипа: самое тихое место, дБ}."""
     ids = ("клип " if len(levels) == 1 else "клипы ") + ", ".join(str(i) for i in sorted(levels))
-    quietest = min(levels.values())
-    text = f"Паузы тише {silence_db:g} дБ не найдены ({ids}), самое тихое место: {quietest:.0f} дБ"
-    if quietest > -20:
-        return text + ". Похоже, звук там не затихает (музыка или игра) — попробуйте --pause-detect words."
-    suggest = int(quietest) + 5
-    return (
-        text + f". Попробуйте --silence-db {suggest} (ниже — тише) или --pause-detect words, если это музыка или игра."
-    )
+    quietest = round(min(levels.values()))
+    text = f"Паузы тише {silence_db:g} дБ не найдены ({ids}), самое тихое место: {quietest} дБ"
+    if quietest > NOISY_FLOOR:
+        return (
+            text + ". Звук там почти не затихает (музыка, игра, улица) — лучше искать паузы по словам: "
+            f"--pause-detect words. Или поднимите порог: --silence-db {quietest + 5}."
+        )
+    return text + f". Попробуйте --silence-db {quietest + 5} или --pause-detect words, если это музыка или игра."
 
 
 def parse_silences(log: str, offset: float = 0.0, length: float | None = None) -> list[tuple[float, float]]:

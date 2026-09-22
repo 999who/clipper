@@ -77,10 +77,11 @@ def test_window_min_peak_and_hint():
     assert audio.window_min_peak(samples, rate, 0.6) == pytest.approx(-40.0, abs=0.1)
     assert audio.window_min_peak(samples[:100], rate, 0.6) is None
 
-    hint = audio.pause_hint({2: -27.4, 1: -30.2}, -35)
-    assert "клипы 1, 2" in hint and "самое тихое место: -30 дБ" in hint
-    assert "--silence-db -25" in hint
-    assert "--pause-detect words" in audio.pause_hint({1: -12.0}, -35)
+    hint = audio.pause_hint({2: -27.4, 1: -40.6}, -45)
+    assert "клипы 1, 2" in hint and "самое тихое место: -41 дБ" in hint
+    assert "--silence-db -36 " in hint
+    noisy = audio.pause_hint({1: -21.6}, -35)  # показываем -22 — и порог считаем от -22
+    assert "место: -22 дБ" in noisy and "лучше искать паузы по словам" in noisy and "--silence-db -17" in noisy
 
 
 def test_join_hyphenated_words_and_text():
