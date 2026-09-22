@@ -6,6 +6,7 @@
 import json
 import math
 import os
+import re
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -153,6 +154,30 @@ class Word:
     prob: float = 1.0  # уверенность Whisper 0…1
 
 
+_HYPHEN_TAIL = re.compile(r"^-\w")
+_HYPHEN_GAP = re.compile(r"(?<=\w) -(?=\w)")
+
+
+def join_hyphenated(words: list[Word] | tuple[Word, ...]) -> list[Word]:
+    """«Ха» «-ха» «-ха» → «Ха-ха-ха», «кто» «-то» → «кто-то».
+
+    Whisper по-русски часто отдаёт части слова через дефис отдельными словами.
+    """
+    result: list[Word] = []
+    for word in words:
+        prev = result[-1] if result else None
+        if prev is not None and _HYPHEN_TAIL.match(word.text) and prev.text[-1:].isalnum():
+            result[-1] = Word(prev.text + word.text, prev.start, max(prev.end, word.end), min(prev.prob, word.prob))
+        else:
+            result.append(word)
+    return result
+
+
+def join_hyphenated_text(text: str) -> str:
+    """То же для текста фразы: «Ха -ха -ха.» → «Ха-ха-ха.» (тире « - » не трогается)."""
+    return _HYPHEN_GAP.sub("-", text)
+
+
 @dataclass(frozen=True)
 class Segment:
     """Фраза Whisper: текст и слова с таймкодами."""
@@ -213,8 +238,12 @@ class Transcript:
                 Segment(
                     float(s["start"]),
                     float(s["end"]),
-                    str(s["text"]),
-                    tuple(Word(str(t), float(a), float(b), float(p)) for t, a, b, p in s.get("words") or []),
+                    join_hyphenated_text(str(s["text"])),
+                    tuple(
+                        join_hyphenated(
+                            [Word(str(t), float(a), float(b), float(p)) for t, a, b, p in s.get("words") or []]
+                        )
+                    ),
                 )
                 for s in data.get("segments") or []
             ],

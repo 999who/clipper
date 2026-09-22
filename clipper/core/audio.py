@@ -4,7 +4,9 @@
   - `volume` — ffmpeg `silencedetect`: тише `audio.silence_db` дольше
     `audio.min_pause`. Отрезки, где Whisper слышал слово, не режутся никогда.
   - `words` — промежутки между распознанными словами. Нужен для стримов: из-за
-    игры и музыки настоящей тишины там почти не бывает.
+    игры и музыки настоящей тишины там почти не бывает. Промежутки длиннее
+    `audio.max_gap` не трогаются: там обычно смех, крик или игра, которые
+    Whisper не записывает, а не пауза.
 
   От паузы остаётся по `PAUSE_KEEP` с с каждой стороны, чтобы речь не звучала
   рублено.
@@ -12,9 +14,13 @@
   «эээ» и «ээ» считаются одним словом.
 
 Результат — `ClipEdit`: Timeline (что остаётся) и что именно вырезано.
+
+Если по громкости пауз не нашлось, `quietest_level` меряет самое тихое место
+клипа — по нему интерфейс подсказывает, какой порог silence_db поставить.
 """
 
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,6 +44,7 @@ class ClipEdit:
     timeline: Timeline
     pauses: list[tuple[float, float]] = field(default_factory=list)  # вырезанные паузы (исходник)
     fillers: list[Word] = field(default_factory=list)  # вырезанные слова-паразиты
+    quietest: float | None = None  # дБ: самое тихое место клипа, если по громкости пауз не нашлось
 
     @property
     def paused_seconds(self) -> float:
@@ -57,7 +64,12 @@ def plan_edit(clip: Clip, cfg: Config, silences: list[tuple[float, float]] | Non
     fillers: list[Word] = []
 
     if audio.cut_pauses:
-        found = silences if silences is not None else word_gaps(words, clip.start, clip.end)
+        if silences is not None:
+            found = silences
+        else:
+            found = word_gaps(words, clip.start, clip.end)
+            if audio.max_gap > 0:
+                found = [(a, b) for a, b in found if b - a <= audio.max_gap]
         found = protect_words(found, words)
         pauses = shrink_pauses(found, audio.min_pause, clip.start, clip.end)
         pauses = _limit_pieces(pauses)
@@ -140,6 +152,57 @@ def detect_silences(
         lines = [line for line in result.stderr.splitlines() if line.strip()]
         raise ClipperError(f"ffmpeg не смог найти паузы: {lines[-1] if lines else result.returncode}")
     return parse_silences(result.stderr, offset=start, length=end - start)
+
+
+def quietest_level(ffmpeg: str, video: Path, start: float, end: float, min_pause: float) -> float | None:
+    """Пиковая громкость (дБ) самого тихого отрезка длиной min_pause в [start, end].
+
+    silencedetect найдёт паузу, только если порог выше этого числа. None — если
+    звук прочитать не удалось или клип короче min_pause.
+    """
+    import numpy as np
+
+    rate = 8000
+    args = [
+        ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
+        "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(video),
+        "-map", "0:a:0", "-ac", "1", "-ar", str(rate), "-f", "s16le", "-",
+    ]  # fmt: skip
+    try:
+        result = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    samples = np.abs(np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32))
+    return window_min_peak(samples / 32768.0, rate, min_pause)
+
+
+def window_min_peak(samples, rate: int, window: float) -> float | None:
+    """Минимум по всем окнам длиной `window` от пика |сэмпла| в окне, в дБ."""
+    import numpy as np
+
+    block = rate // 20  # пики по 50 мс, окно — несколько блоков подряд
+    count = len(samples) // block
+    size = max(1, round(window * 20))
+    if count < size:
+        return None
+    peaks = samples[: count * block].reshape(count, block).max(axis=1)
+    windows = np.lib.stride_tricks.sliding_window_view(peaks, size).max(axis=1)
+    return round(20 * float(np.log10(max(float(windows.min()), 1e-5))), 1)
+
+
+def pause_hint(levels: dict[int, float], silence_db: float) -> str:
+    """Подсказка, когда по громкости пауз не нашлось: {id клипа: самое тихое место, дБ}."""
+    ids = ("клип " if len(levels) == 1 else "клипы ") + ", ".join(str(i) for i in sorted(levels))
+    quietest = min(levels.values())
+    text = f"Паузы тише {silence_db:g} дБ не найдены ({ids}), самое тихое место: {quietest:.0f} дБ"
+    if quietest > -20:
+        return text + ". Похоже, звук там не затихает (музыка или игра) — попробуйте --pause-detect words."
+    suggest = int(quietest) + 5
+    return (
+        text + f". Попробуйте --silence-db {suggest} (ниже — тише) или --pause-detect words, если это музыка или игра."
+    )
 
 
 def parse_silences(log: str, offset: float = 0.0, length: float | None = None) -> list[tuple[float, float]]:

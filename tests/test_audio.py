@@ -14,7 +14,7 @@ from clipper.core import audio
 from clipper.core import transcribe as tr
 from clipper.core.config import load_config
 from clipper.core.events import Reporter
-from clipper.core.models import Clip, Project, SourceInfo, Word, save_project
+from clipper.core.models import Clip, Project, SourceInfo, Transcript, Word, join_hyphenated, save_project
 from clipper.core.render import cut_filter, render_project
 from clipper.core.timeline import Timeline
 
@@ -55,6 +55,46 @@ def test_protect_words_and_word_gaps():
     words = [Word("тихо", 2.4, 2.8), Word("слово", 5.0, 5.5)]
     assert audio.protect_words([(2.0, 3.0)], words) == [(2.0, 2.4), (2.8, 3.0)]
     assert audio.word_gaps(words, 1.0, 6.0) == [(1.0, 2.4), (2.8, 5.0), (5.5, 6.0)]
+
+
+def test_words_mode_keeps_long_gaps():
+    # 1.5…2.5 — пауза; 3.0…9.0 — долго без слов (смех, игра): не пауза.
+    words = [Word("раз", 1.0, 1.5), Word("два", 2.5, 3.0), Word("три", 9.0, 9.5)]
+    clip = Clip(1, 1.0, 9.5, words=words)
+    cfg = load_config(None, {"audio.cut_pauses": True, "audio.pause_detect": "words"})
+    k = audio.PAUSE_KEEP
+    assert audio.plan_edit(clip, cfg).pauses == [(round(1.5 + k, 3), round(2.5 - k, 3))]
+    everything = load_config(None, {"audio.cut_pauses": True, "audio.pause_detect": "words", "audio.max_gap": 0})
+    assert len(audio.plan_edit(clip, everything).pauses) == 2
+
+
+def test_window_min_peak_and_hint():
+    np = pytest.importorskip("numpy")
+    rate = 8000
+    loud = np.full(rate, 0.5, dtype=np.float32)
+    quiet = np.full(rate, 0.01, dtype=np.float32)  # −40 дБ
+    samples = np.concatenate([loud, quiet, loud])
+    assert audio.window_min_peak(samples, rate, 0.6) == pytest.approx(-40.0, abs=0.1)
+    assert audio.window_min_peak(samples[:100], rate, 0.6) is None
+
+    hint = audio.pause_hint({2: -27.4, 1: -30.2}, -35)
+    assert "клипы 1, 2" in hint and "самое тихое место: -30 дБ" in hint
+    assert "--silence-db -25" in hint
+    assert "--pause-detect words" in audio.pause_hint({1: -12.0}, -35)
+
+
+def test_join_hyphenated_words_and_text():
+    words = [Word("Ха", 1.0, 1.2, 0.9), Word("-ха", 1.2, 1.4, 0.8), Word("-ха.", 1.4, 1.6), Word("кто", 2.0, 2.2)]
+    words += [Word("-то", 2.2, 2.4), Word("-", 2.5, 2.6), Word("вот.", 2.7, 3.0), Word("-нет", 3.1, 3.3)]
+    joined = join_hyphenated(words)
+    assert [w.text for w in joined] == ["Ха-ха-ха.", "кто-то", "-", "вот.", "-нет"]
+    assert (joined[0].start, joined[0].end, joined[0].prob) == (1.0, 1.6, 0.8)
+
+    data = {"segments": [{"start": 1, "end": 2, "text": "Ха -ха -ха. Да - нет", "words": [
+        ["Ха", 1.0, 1.2, 1.0], ["-ха", 1.2, 1.4, 1.0]]}]}  # fmt: skip
+    (segment,) = Transcript.from_dict(data).segments
+    assert segment.text == "Ха-ха-ха. Да - нет"
+    assert [w.text for w in segment.words] == ["Ха-ха"]
 
 
 def test_parse_silences():
@@ -157,6 +197,8 @@ def test_detect_silences_on_real_audio(tmp_path):
     silences = audio.detect_silences(shutil.which("ffmpeg"), video, 1.0, 9.0, silence_db=-35, min_pause=0.6)
     ((a, b),) = silences
     assert a == pytest.approx(3.0, abs=0.1) and b == pytest.approx(5.0, abs=0.1)
+    assert audio.quietest_level(shutil.which("ffmpeg"), video, 1.0, 9.0, 0.6) < -80  # там полная тишина
+    assert audio.quietest_level(shutil.which("ffmpeg"), video, 6.0, 9.0, 0.6) > -20  # синус без пауз
 
 
 def project_for(video: Path, clips: list[Clip]) -> Project:
@@ -205,3 +247,26 @@ def test_render_words_mode_and_cli_flags(tmp_path, monkeypatch):
 
     plain = runner.invoke(cli.app, ["render", "--encoder", "x264", *common])
     assert plain.exit_code == 0 and "Вырезано" not in plain.output
+
+    # По громкости пауз нет (синус без тишины) — подсказка, какой порог поставить.
+    volume = runner.invoke(cli.app, ["render", "--cut-pauses", "--encoder", "x264", *common])
+    assert volume.exit_code == 0, volume.output
+    assert "Паузы тише -35 дБ не найдены (клип 1)" in volume.output
+    assert "--pause-detect words" in volume.output
+    assert "Вырезано" not in volume.output
+
+
+@needs_ffmpeg
+def test_render_warns_when_clip_gets_shorter_than_min_len(tmp_path):
+    video = make_talk(tmp_path / "talk.mp4")
+    project = project_for(video, [Clip(1, 1.0, 9.0, words=[Word("раз", 1.2, 1.6), Word("два", 6.0, 6.5)])])
+    cfg = load_config(
+        None,
+        {"audio.cut_pauses": True, "render.encoder": "x264", "select.min_len": 7,
+         "paths.output": str(tmp_path / "out")},
+    )  # fmt: skip
+    messages = []
+    reporter = Reporter(sink=messages.append)
+    (result,) = render_project(project, tmp_path, cfg, reporter)
+    assert result.error is None and result.duration < 7
+    assert any("короче min_len (7 с)" in getattr(m, "text", "") for m in messages)

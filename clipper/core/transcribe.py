@@ -25,6 +25,8 @@ from clipper.core.errors import ClipperError, DependencyError
 from clipper.core.events import Reporter
 from clipper.core.ffmpeg import run_ffmpeg
 from clipper.core.models import (
+    join_hyphenated,
+    join_hyphenated_text,
     SRT_FILENAME,
     Segment,
     SourceInfo,
@@ -204,7 +206,8 @@ def convert_segment(raw: Any, offset: float, range_end: float) -> Segment | None
             start = words[-1].start
             end = max(end, start)
         words.append(Word(text, round(start, 3), round(end, 3), round(float(raw_word.probability), 3)))
-    text = " ".join(str(raw.text).split())
+    words = join_hyphenated(words)
+    text = join_hyphenated_text(" ".join(str(raw.text).split()))
     if not text or not words:
         return None
     return Segment(

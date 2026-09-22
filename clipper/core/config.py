@@ -73,6 +73,7 @@ class AudioConfig:
     pause_detect: Literal["volume", "words"] = "volume"  # по громкости или по промежуткам между словами
     silence_db: float = -35.0  # порог тишины, дБ
     min_pause: float = 0.6  # вырезаются паузы не короче этого, с
+    max_gap: float = 3.0  # words: промежутки без слов длиннее этого не вырезаются, с; 0 — резать все
     remove_fillers: bool = False
     fillers: list[str] = field(default_factory=lambda: list(DEFAULT_FILLERS))
 

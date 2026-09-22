@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from clipper.core import env
-from clipper.core.audio import ClipEdit, detect_silences, plan_edit
+from clipper.core.audio import ClipEdit, detect_silences, pause_hint, plan_edit, quietest_level
 from clipper.core.config import Config
 from clipper.core.errors import ClipperError
 from clipper.core.events import Reporter
@@ -102,12 +102,15 @@ def render_project(
     reporter.info(f"Кодировщик: {'NVENC (видеокарта)' if encoder == 'nvenc' else 'libx264 (процессор)'}")
 
     results = []
+    levels: dict[int, float] = {}  # клипы, где по громкости пауз не нашлось
     for number, clip in enumerate(clips, start=1):
         title = f"Клип {number}/{len(clips)} (id {clip.id})"
         target = out / clip_filename(clip)
         try:
             edit = clip_edit(clip, video, ffmpeg.path, cfg, project.source.has_audio)
             length = edit.timeline.duration
+            if edit.quietest is not None:
+                levels[clip.id] = edit.quietest
             with reporter.stage(f"clip_{clip.id}", title, total=length, unit="seconds") as stage:
                 render_clip(clip, edit, video, target, ffmpeg.path, encoder, reporter, stage.update, work_dir,
                             has_audio=project.source.has_audio)  # fmt: skip
@@ -115,8 +118,15 @@ def render_project(
             results.append(
                 RenderResult(clip.id, target, duration=length, removed=edit.timeline.removed, fillers=len(edit.fillers))
             )
+            if not edit.timeline.is_whole and length < cfg.select.min_len:
+                reporter.warning(
+                    f"Клип {clip.id} после вырезок — {length:.0f} с, короче min_len ({cfg.select.min_len:g} с). "
+                    f"Расширьте его в project.json или ослабьте вырезание (--min-pause, --set audio.max_gap=…)."
+                )
         except ClipperError as exc:
             results.append(RenderResult(clip.id, None, error=exc.message))
+    if levels:
+        reporter.warning(pause_hint(levels, cfg.audio.silence_db))
     return results
 
 
@@ -126,7 +136,10 @@ def clip_edit(clip: Clip, video: Path, ffmpeg: str, cfg: Config, has_audio: bool
     silences = None
     if audio.cut_pauses and audio.pause_detect == "volume" and has_audio:
         silences = detect_silences(ffmpeg, video, clip.start, clip.end, audio.silence_db, audio.min_pause)
-    return plan_edit(clip, cfg, silences)
+    edit = plan_edit(clip, cfg, silences)
+    if silences is not None and not edit.pauses:
+        edit.quietest = quietest_level(ffmpeg, video, clip.start, clip.end, audio.min_pause)
+    return edit
 
 
 def _edit_note(edit: ClipEdit) -> str:
@@ -135,7 +148,7 @@ def _edit_note(edit: ClipEdit) -> str:
         parts.append(f"паузы −{edit.paused_seconds:.1f} с")
     if edit.fillers:
         parts.append(f"паразиты: {len(edit.fillers)}")
-    return f" ({', '.join(parts)})" if parts else ""
+    return "".join(f", {part}" for part in parts)
 
 
 def render_clip(
