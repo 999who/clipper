@@ -227,7 +227,7 @@ def test_write_srt(tmp_path):
     path = tr.write_srt(transcript, tmp_path / "t.srt")
     raw = path.read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf")  # BOM — кириллица в плеерах Windows
-    assert raw.decode("utf-8-sig") == "1\n01:02:03,500 --> 01:02:05,250\nПривет\n"
+    assert raw.decode("utf-8-sig") == "1\r\n01:02:03,500 --> 01:02:05,250\r\nПривет\r\n"  # одинаково на любой ОС
 
 
 @pytest.mark.parametrize(
@@ -330,3 +330,10 @@ def test_plural(count, text):
     from clipper.core.text import plural
 
     assert plural(count, "слово", "слова", "слов") == text
+
+
+def test_huggingface_messages_are_silenced():
+    import logging
+
+    tr._quiet_huggingface()
+    assert logging.getLogger("huggingface_hub").getEffectiveLevel() == logging.ERROR

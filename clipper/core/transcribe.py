@@ -273,8 +273,7 @@ def read_audio(path: Path, start: float, end: float) -> Any:
 def load_whisper(cfg: Config, reporter: Reporter) -> Engine:
     """Загрузить large-v3 на видеокарту (при первом запуске — скачать, ~3 ГБ)."""
     env.setup_cuda_dlls()  # до импорта ctranslate2
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")  # прогресс рисуем сами
+    _quiet_huggingface()
     try:
         import ctranslate2
         from faster_whisper import WhisperModel
@@ -318,7 +317,7 @@ def load_whisper(cfg: Config, reporter: Reporter) -> Engine:
 
 def model_is_downloaded(model_dir: str | None = None) -> bool:
     """Скачана ли уже модель large-v3 (без обращения к сети)."""
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    _quiet_huggingface()
     try:
         from faster_whisper.utils import download_model
 
@@ -326,6 +325,19 @@ def model_is_downloaded(model_dir: str | None = None) -> bool:
     except Exception:
         return False
     return True
+
+
+def _quiet_huggingface() -> None:
+    """Без служебных сообщений HuggingFace Hub поверх нашего прогресса.
+
+    Например, «You are sending unauthenticated requests to the HF Hub…» — токен
+    для скачивания открытой модели не нужен. У логгера huggingface_hub свой
+    обработчик, поэтому такие сообщения выводились дважды и ломали строку прогресса.
+    """
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")  # прогресс рисуем сами
+    os.environ.setdefault("HF_HUB_VERBOSITY", "error")
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 
 def whisper_error(exc: BaseException) -> ClipperError:
@@ -384,7 +396,8 @@ def write_srt(transcript: Transcript, path: Path) -> Path:
     for index, segment in enumerate(transcript.segments, start=1):
         blocks.append(f"{index}\n{_srt_time(segment.start)} --> {_srt_time(segment.end)}\n{segment.text}\n")
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text("\n".join(blocks), encoding="utf-8-sig")  # BOM: так кириллицу понимают все плееры Windows
+    # BOM — чтобы кириллицу понимали все плееры Windows; CRLF — обычный формат SRT на любой ОС.
+    tmp.write_text("\n".join(blocks), encoding="utf-8-sig", newline="\r\n")
     os.replace(tmp, path)
     return path
 
