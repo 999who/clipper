@@ -33,7 +33,9 @@ from clipper.core.doctor import CheckResult
 from clipper.core.errors import ClipperError
 from clipper.core.text import plural
 from clipper.core.events import Event, Message, StageFinished, StageProgress, StageStarted
+from clipper.core.render import RenderResult
 from clipper.core.models import (
+    Project,
     SRT_FILENAME,
     TRANSCRIPT_FILENAME,
     HeatPoint,
@@ -309,6 +311,55 @@ def print_transcript(
         "\n[dim]Проверка: откройте видео в VLC или MPC-HC и перетащите в окно файл transcript.srt — "
         "фразы должны совпадать с речью по времени.[/]"
     )
+
+
+# --- analyze / render --------------------------------------------------------------------
+
+
+def print_analysis(project: Project, path: Path, next_step: bool = True) -> None:
+    """Таблица найденных клипов и путь к project.json."""
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("id", justify="right")
+    table.add_column("Время", no_wrap=True)
+    table.add_column("Длина", justify="right", no_wrap=True)
+    table.add_column("Почему", overflow="fold")
+    table.add_column("Начало речи", overflow="ellipsis", no_wrap=True, max_width=48)
+    for clip in project.clips:
+        words = " ".join(w.text for w in clip.spoken_words()[:10])
+        table.add_row(
+            str(clip.id),
+            f"{_clock(clip.start)}–{_clock(clip.end)}",
+            f"{clip.duration:.0f} с",
+            escape(clip.reason),
+            escape(words) or "[dim](без речи)[/]",
+        )
+    console.print()
+    console.print(table)
+    console.print(f"[bold]Проект:[/] {escape(str(path))}")
+    if next_step:
+        console.print(
+            "[dim]Можно поправить границы (start/end), выключить клип (enabled: false) или исправить слова, "
+            "затем: clipper render[/]"
+        )
+
+
+def print_render(results: list[RenderResult], folder: Path) -> None:
+    """Итог рендера: какие клипы готовы, какие — нет и почему."""
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("id", justify="right")
+    table.add_column("Файл")
+    table.add_column("Длина", justify="right")
+    table.add_column("Статус", overflow="fold")
+    for result in results:
+        if result.path is not None:
+            table.add_row(str(result.clip_id), escape(result.path.name), f"{result.duration:.0f} с", "[green]готово[/]")
+        else:
+            table.add_row(str(result.clip_id), "—", "—", f"[red]ошибка:[/] {escape(result.error or '')}")
+    console.print()
+    console.print(table)
+    done = sum(r.path is not None for r in results)
+    color = "green" if done == len(results) else "yellow"
+    console.print(f"[{color}]Готово клипов: {done} из {len(results)}[/] — {escape(str(folder))}")
 
 
 # --- Форматирование ------------------------------------------------------------------

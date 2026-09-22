@@ -19,7 +19,9 @@ from clipper.console import (
     console,
     print_config,
     print_doctor,
+    print_analysis,
     print_error,
+    print_render,
     print_source,
     print_transcript,
     setup_logging,
@@ -34,6 +36,7 @@ from clipper.core.config import (
     parse_set_options,
     write_example_config,
 )
+from clipper.core import pipeline
 from clipper.core.doctor import run_doctor
 from clipper.core.download import prepare_source
 from clipper.core.errors import Cancelled, ClipperError
@@ -230,6 +233,187 @@ def _time_option(name: str, value: str | None, default: float) -> float:
         return parse_time(value)
     except ValueError as exc:
         raise ClipperError(f"{name}: {exc}", hint="Примеры: 90, 1:30, 1:02:03.5") from None
+
+
+PANEL_SELECT = "Выбор моментов"
+PANEL_RENDER = "Рендер"
+
+ModeOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--mode-select",
+        help="Как выбирать моменты: heatmap или keywords.",
+        show_default=False,
+        rich_help_panel=PANEL_SELECT,
+    ),
+]
+KeywordsOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--keywords",
+        help='Ключевые слова через запятую: "победа,жесть,да ладно"; * — любое окончание: побед*.',
+        show_default=False,
+        rich_help_panel=PANEL_SELECT,
+    ),
+]
+ClipsOption = Annotated[
+    Optional[int],
+    typer.Option(
+        "--clips", help="Сколько клипов сделать (по умолчанию 5).", show_default=False, rich_help_panel=PANEL_SELECT
+    ),
+]
+MinLenOption = Annotated[
+    Optional[float],
+    typer.Option(
+        "--min-len",
+        help="Минимальная длина клипа, с (по умолчанию 20).",
+        show_default=False,
+        rich_help_panel=PANEL_SELECT,
+    ),
+]
+MaxLenOption = Annotated[
+    Optional[float],
+    typer.Option(
+        "--max-len",
+        help="Максимальная длина клипа, с (по умолчанию 60).",
+        show_default=False,
+        rich_help_panel=PANEL_SELECT,
+    ),
+]
+LangOption = Annotated[
+    Optional[str],
+    typer.Option("--lang", help="Язык речи: ru, en, … или auto.", show_default=False, rich_help_panel=PANEL_SELECT),
+]
+ForceOption = Annotated[
+    bool, typer.Option("--force", help="Распознать речь заново, не используя кэш.", rich_help_panel=PANEL_SELECT)
+]
+ProjectOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--project",
+        help="project.json, папка work/<id> или id видео. По умолчанию — последний проект.",
+        show_default=False,
+        rich_help_panel=PANEL_RENDER,
+    ),
+]
+ClipOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--clip",
+        metavar="ID",
+        help="Рендерить только эти клипы: 2 или 1,3.",
+        show_default=False,
+        rich_help_panel=PANEL_RENDER,
+    ),
+]
+EncoderOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--encoder", help="auto, nvenc или x264 (по умолчанию auto).", show_default=False, rich_help_panel=PANEL_RENDER
+    ),
+]
+OutOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--out",
+        help="Папка для готовых клипов (по умолчанию output).",
+        show_default=False,
+        rich_help_panel=PANEL_RENDER,
+    ),
+]
+
+
+def _select_flags(mode, keywords, clips, min_len, max_len, lang) -> dict[str, Any]:
+    return {
+        "select.mode": mode,
+        "select.keywords": keywords,
+        "select.clips": clips,
+        "select.min_len": min_len,
+        "select.max_len": max_len,
+        "transcribe.language": lang,
+    }
+
+
+def _clip_ids(value: str | None) -> set[int] | None:
+    if not value:
+        return None
+    try:
+        return {int(part) for part in value.replace(" ", "").split(",") if part}
+    except ValueError:
+        raise ClipperError(
+            f"--clip {value}: нужны номера клипов через запятую", hint="Например: --clip 2 или --clip 1,3"
+        ) from None
+
+
+@app.command()
+def analyze(
+    source: Annotated[str, typer.Argument(metavar="ССЫЛКА_ИЛИ_ФАЙЛ", help="Ссылка на видео YouTube или путь к файлу.")],
+    mode: ModeOption = None,
+    keywords: KeywordsOption = None,
+    clips: ClipsOption = None,
+    min_len: MinLenOption = None,
+    max_len: MaxLenOption = None,
+    lang: LangOption = None,
+    force: ForceOption = False,
+    config: ConfigOption = None,
+    set_items: SetOption = None,
+    verbose: VerboseOption = False,
+) -> None:
+    """Выбрать моменты и распознать речь → work/<id>/project.json (его можно поправить руками)."""
+    with _command(verbose) as token:
+        cfg, _ = build_config(config, set_items, _select_flags(mode, keywords, clips, min_len, max_len, lang))
+        with ConsoleSink() as sink:
+            project, path = pipeline.analyze(source, cfg, Reporter(sink, token), force=force)
+        print_analysis(project, path)
+
+
+@app.command()
+def render(
+    project: ProjectOption = None,
+    clip: ClipOption = None,
+    encoder: EncoderOption = None,
+    out: OutOption = None,
+    config: ConfigOption = None,
+    set_items: SetOption = None,
+    verbose: VerboseOption = False,
+) -> None:
+    """Нарезать клипы по project.json → output/<id>/clip_NN.mp4."""
+    with _command(verbose) as token:
+        cfg, _ = build_config(config, set_items, {"render.encoder": encoder, "paths.output": out})
+        with ConsoleSink() as sink:
+            _, folder, results = pipeline.render(cfg, Reporter(sink, token), project, _clip_ids(clip))
+        print_render(results, folder)
+    if any(result.path is None for result in results):
+        raise typer.Exit(1)
+
+
+@app.command()
+def run(
+    source: Annotated[str, typer.Argument(metavar="ССЫЛКА_ИЛИ_ФАЙЛ", help="Ссылка на видео YouTube или путь к файлу.")],
+    mode: ModeOption = None,
+    keywords: KeywordsOption = None,
+    clips: ClipsOption = None,
+    min_len: MinLenOption = None,
+    max_len: MaxLenOption = None,
+    lang: LangOption = None,
+    force: ForceOption = False,
+    encoder: EncoderOption = None,
+    out: OutOption = None,
+    config: ConfigOption = None,
+    set_items: SetOption = None,
+    verbose: VerboseOption = False,
+) -> None:
+    """analyze + render одной командой: от ссылки до готовых клипов."""
+    with _command(verbose) as token:
+        flags = _select_flags(mode, keywords, clips, min_len, max_len, lang)
+        flags.update({"render.encoder": encoder, "paths.output": out})
+        cfg, _ = build_config(config, set_items, flags)
+        with ConsoleSink() as sink:
+            project, folder, results = pipeline.run(source, cfg, Reporter(sink, token), force=force)
+        print_analysis(project, pipeline.work_dir_for(cfg, project.source.id) / "project.json", next_step=False)
+        print_render(results, folder)
+    if any(result.path is None for result in results):
+        raise typer.Exit(1)
 
 
 def main() -> None:

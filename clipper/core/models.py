@@ -7,7 +7,7 @@ import json
 import math
 import os
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -301,3 +301,197 @@ def format_time(seconds: float) -> str:
     minutes, millis = divmod(millis, 60_000)
     secs, millis = divmod(millis, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
+# --- проект ---------------------------------------------------------------------------
+
+PROJECT_FILENAME = "project.json"  # ← этот файл пользователь правит руками
+PROJECT_VERSION = 1
+
+_CLIP_KEYS = {"id", "enabled", "start", "end", "score", "reason", "words"}
+
+
+class ProjectError(ValueError):
+    """project.json испорчен или заполнен неправильно (текст — для пользователя)."""
+
+
+@dataclass
+class Clip:
+    id: int
+    start: float  # с от начала исходного видео
+    end: float
+    score: float = 0.0
+    reason: str = ""
+    enabled: bool = True
+    words: list[Word] = field(default_factory=list)  # с запасом за границами клипа
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+    def spoken_words(self) -> list[Word]:
+        """Слова внутри границ клипа."""
+        return [w for w in self.words if w.end > self.start and w.start < self.end]
+
+
+@dataclass
+class Project:
+    source: SourceInfo  # без heatmap: он лежит в source.json
+    mode: str
+    keywords: list[str]
+    language: str | None
+    created: str
+    clips: list[Clip]
+
+    def to_dict(self) -> dict[str, Any]:
+        source = self.source.to_dict()
+        source.pop("heatmap", None)
+        return {
+            "version": PROJECT_VERSION,
+            "_help": (
+                "Можно править: start/end клипа (ЧЧ:ММ:СС.мс или секунды), enabled (false — пропустить клип), "
+                "text слов (исправит субтитры). Время слов — секунды от начала исходного видео."
+            ),
+            "source": source,
+            "analysis": {
+                "mode": self.mode,
+                "keywords": self.keywords,
+                "language": self.language,
+                "created": self.created,
+            },
+            "clips": [
+                {
+                    "id": clip.id,
+                    "enabled": clip.enabled,
+                    "start": format_time(clip.start),
+                    "end": format_time(clip.end),
+                    "score": round(clip.score, 3),
+                    "reason": clip.reason,
+                    "words": [{"text": w.text, "start": round(w.start, 3), "end": round(w.end, 3)} for w in clip.words],
+                }
+                for clip in self.clips
+            ],
+        }
+
+
+def project_to_json(project: Project) -> str:
+    """JSON проекта для ручной правки: разделы — блоками, каждое слово — одной строкой."""
+    return _dump(project.to_dict(), 0) + "\n"
+
+
+def _dump(value: Any, level: int) -> str:
+    pad, inner = "  " * level, "  " * (level + 1)
+    if isinstance(value, dict) and value:
+        items = [f"{inner}{json.dumps(k, ensure_ascii=False)}: {_dump(v, level + 1)}" for k, v in value.items()]
+        return "{\n" + ",\n".join(items) + f"\n{pad}}}"
+    if isinstance(value, list) and value and all(_is_leaf_dict(v) for v in value):
+        items = [inner + json.dumps(v, ensure_ascii=False) for v in value]
+        return "[\n" + ",\n".join(items) + f"\n{pad}]"
+    if isinstance(value, list) and value and any(isinstance(v, (dict, list)) for v in value):
+        return "[\n" + ",\n".join(inner + _dump(v, level + 1) for v in value) + f"\n{pad}]"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _is_leaf_dict(value: Any) -> bool:
+    return isinstance(value, dict) and all(not isinstance(v, (dict, list)) for v in value.values())
+
+
+def save_project(work_dir: Path, project: Project) -> Path:
+    path = work_dir / PROJECT_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(project_to_json(project))
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return path
+
+
+def load_project(path: Path) -> Project:
+    """Прочитать project.json (в том числе поправленный руками) с проверкой."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        raise ProjectError(f"не удалось прочитать {path}: {exc.strerror}") from None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ProjectError(
+            f"строка {exc.lineno}, столбец {exc.colno}: {exc.msg} — "
+            "проверьте запятые между элементами и кавычки вокруг текста"
+        ) from None
+    return parse_project(data)
+
+
+def parse_project(data: Any) -> Project:
+    if not isinstance(data, dict):
+        raise ProjectError("ожидался объект { … } с разделами source, analysis, clips")
+    if data.get("version") != PROJECT_VERSION:
+        raise ProjectError(f"неизвестная версия файла: {data.get('version')!r} (ожидалась {PROJECT_VERSION})")
+    try:
+        source_data = dict(data["source"])
+        source_data["heatmap"] = None
+        source = SourceInfo.from_dict(source_data)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProjectError(f"раздел source испорчен: {exc}") from None
+    analysis = data.get("analysis") or {}
+    raw_clips = data.get("clips")
+    if not isinstance(raw_clips, list):
+        raise ProjectError("раздел clips должен быть списком [ … ]")
+    clips = [_parse_clip(raw, index, source.duration) for index, raw in enumerate(raw_clips, start=1)]
+    ids = [clip.id for clip in clips]
+    if len(set(ids)) != len(ids):
+        raise ProjectError(f"у клипов повторяются id: {sorted(i for i in set(ids) if ids.count(i) > 1)}")
+    return Project(
+        source=source,
+        mode=str(analysis.get("mode") or ""),
+        keywords=list(analysis.get("keywords") or []),
+        language=analysis.get("language"),
+        created=str(analysis.get("created") or ""),
+        clips=clips,
+    )
+
+
+def _parse_clip(raw: Any, index: int, duration: float) -> Clip:
+    where = f"клип №{index}"
+    if not isinstance(raw, dict):
+        raise ProjectError(f"{where}: ожидался объект {{ … }}")
+    if "id" in raw:
+        where = f"клип id={raw['id']}"
+    unknown = set(raw) - _CLIP_KEYS
+    if unknown:
+        raise ProjectError(f"{where}: неизвестные поля {sorted(unknown)}; допустимы {sorted(_CLIP_KEYS)}")
+    try:
+        clip_id = int(raw["id"])
+        start = parse_time(raw["start"])
+        end = parse_time(raw["end"])
+    except KeyError as exc:
+        raise ProjectError(f"{where}: нет поля {exc}") from None
+    except (TypeError, ValueError) as exc:
+        raise ProjectError(f"{where}: {exc}") from None
+    if end <= start:
+        raise ProjectError(f"{where}: конец ({format_time(end)}) должен быть позже начала ({format_time(start)})")
+    if end > duration + 0.5:
+        raise ProjectError(f"{where}: конец {format_time(end)} дальше конца видео ({format_time(duration)})")
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ProjectError(f"{where}: enabled должно быть true или false")
+    words = []
+    for number, item in enumerate(raw.get("words") or [], start=1):
+        try:
+            words.append(Word(str(item["text"]), float(item["start"]), float(item["end"])))
+        except (KeyError, TypeError, ValueError):
+            raise ProjectError(f"{where}, слово №{number}: нужны text, start и end (числа)") from None
+    words.sort(key=lambda w: w.start)
+    return Clip(
+        id=clip_id,
+        start=start,
+        end=min(end, duration),
+        score=float(raw.get("score") or 0.0),
+        reason=str(raw.get("reason") or ""),
+        enabled=enabled,
+        words=words,
+    )
