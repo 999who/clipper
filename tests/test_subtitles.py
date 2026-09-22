@@ -253,3 +253,54 @@ def test_cli_no_subs_and_missing_libass(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "нет libass" in result.output
     assert frame_colors(clip, 1.0) == (0, 0)
+
+
+def test_publish_when_target_is_locked(tmp_path, monkeypatch):
+    """Windows: clip_01.mp4 открыт в плеере — рендер не теряется и не роняет остальные клипы."""
+    monkeypatch.setattr(render_module, "REPLACE_DELAY", 0)
+    real_replace = render_module.os.replace
+    target = tmp_path / "clip_01.mp4"
+    target.write_bytes(b"old")
+    calls = []
+
+    def locked(src, dst):
+        calls.append(Path(dst).name)
+        if Path(dst) == target:
+            raise PermissionError(13, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(render_module.os, "replace", locked)
+    part = tmp_path / "clip_01.part.mp4"
+    part.write_bytes(b"new")
+    saved = render_module.publish(part, target)
+    assert saved == tmp_path / "clip_01.new.mp4" and saved.read_bytes() == b"new"
+    assert target.read_bytes() == b"old" and not part.exists()
+    assert calls.count("clip_01.mp4") == render_module.REPLACE_ATTEMPTS
+
+    monkeypatch.setattr(render_module.os, "replace", real_replace)  # плеер закрыли
+    part.write_bytes(b"newer")
+    assert render_module.publish(part, target) == target
+    assert target.read_bytes() == b"newer" and not saved.exists()
+
+
+@needs_ffmpeg
+def test_render_reports_locked_file_per_clip(tmp_path, monkeypatch):
+    monkeypatch.setattr(render_module, "REPLACE_DELAY", 0)
+    video = black_video(tmp_path / "talk.mp4", seconds=3)
+    project = project_for(video, [Clip(1, 0.0, 1.5), Clip(2, 1.5, 3.0)])
+    cfg = load_config(
+        None, {"render.encoder": "x264", "subtitles.enabled": False, "paths.output": str(tmp_path / "out")}
+    )
+    real_replace = render_module.os.replace
+
+    def locked(src, dst):
+        if Path(dst).name.startswith("clip_01"):
+            raise PermissionError(13, "Access is denied", str(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(render_module.os, "replace", locked)
+    messages = []
+    first, second = render_project(project, tmp_path / "work", cfg, Reporter(messages.append))
+    assert first.path is None and "занят другой программой" in first.error
+    assert second.error is None and second.path.name == "clip_02.mp4"
+    assert not list((tmp_path / "out" / "talk").glob("*.part.mp4"))

@@ -12,7 +12,9 @@ audio.remove_fillers, из него вырезаются паузы и слов�
 временный и потом переименовывается — прерванный рендер не оставит битых mp4.
 """
 
+import contextlib
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +37,8 @@ VIDEO_ARGS = {
 }
 AUDIO_ARGS = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
 FADE = 0.01  # с: фейд звука на стыках вырезок
+REPLACE_ATTEMPTS = 5  # Windows: файл может ненадолго держать антивирус или проводник
+REPLACE_DELAY = 0.4  # с между попытками
 
 
 @dataclass(frozen=True)
@@ -127,13 +131,16 @@ def render_project(
                 levels[clip.id] = edit.quietest
             ass = clip_subtitles(clip, edit, project, subs, length)
             with reporter.stage(f"clip_{clip.id}", title, total=length, unit="seconds") as stage:
-                render_clip(clip, edit, video, target, ffmpeg.path, encoder, reporter, stage.update, work_dir,
-                            has_audio=project.source.has_audio, subtitles=ass)  # fmt: skip
-                stage.result = (
-                    target.name + _edit_note(edit) + (", без субтитров: нет слов" if subs and not ass else "")
+                saved = render_clip(clip, edit, video, target, ffmpeg.path, encoder, reporter, stage.update, work_dir,
+                                    has_audio=project.source.has_audio, subtitles=ass)  # fmt: skip
+                stage.result = saved.name + _edit_note(edit) + (", без субтитров: нет слов" if subs and not ass else "")
+            if saved != target:
+                reporter.warning(
+                    f"{target.name} открыт в другой программе (плеер?) и не заменён — новый клип сохранён как "
+                    f"{saved.name}. Закройте файл, чтобы в следующий раз он перезаписался."
                 )
             results.append(
-                RenderResult(clip.id, target, duration=length, removed=edit.timeline.removed, fillers=len(edit.fillers),
+                RenderResult(clip.id, saved, duration=length, removed=edit.timeline.removed, fillers=len(edit.fillers),
                              subtitles=ass is not None)
             )  # fmt: skip
             if not edit.timeline.is_whole and length < cfg.select.min_len:
@@ -143,6 +150,8 @@ def render_project(
                 )
         except ClipperError as exc:
             results.append(RenderResult(clip.id, None, error=exc.message))
+        except OSError as exc:  # диск, права, занятый файл — это ошибка одного клипа, не всего рендера
+            results.append(RenderResult(clip.id, None, error=f"{exc.strerror or exc}: {exc.filename or target}"))
     if levels:
         reporter.warning(pause_hint(levels, cfg.audio.silence_db))
     return results
@@ -216,10 +225,11 @@ def render_clip(
     *,
     has_audio: bool = True,
     subtitles: Path | None = None,
-) -> None:
+) -> Path:
     """Вырезать клип из исходника (с вырезками по edit), наложить субтитры и закодировать в H.264 + AAC.
 
     `subtitles` — .ass; ffmpeg запускается из его папки, рядом должна лежать папка fonts/.
+    Возвращает путь готового файла (см. publish).
     """
     tmp = target.with_name(target.stem + ".part.mp4")
     post = f"subtitles=filename={subtitles.name}:fontsdir=fonts" if subtitles else None
@@ -245,7 +255,35 @@ def render_clip(
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
-    os.replace(tmp, target)
+    return publish(tmp, target)
+
+
+def publish(tmp: Path, target: Path) -> Path:
+    """Переименовать готовый .part.mp4 в target.
+
+    На Windows открытый в плеере файл заменить нельзя. Тогда после нескольких
+    попыток клип сохраняется рядом как clip_NN.new.mp4 — готовый рендер не пропадает.
+    """
+    fallback = target.with_name(target.stem + ".new" + target.suffix)
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp, target)
+        except PermissionError:
+            if attempt + 1 < REPLACE_ATTEMPTS:
+                time.sleep(REPLACE_DELAY)
+            continue
+        with contextlib.suppress(OSError):
+            fallback.unlink(missing_ok=True)  # запасной файл от прошлого раза больше не нужен
+        return target
+    try:
+        os.replace(tmp, fallback)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        raise ClipperError(
+            f"Не удалось сохранить {target.name}: файл занят другой программой ({exc.strerror}).",
+            hint="Закройте плеер или проводник с этим файлом и запустите рендер ещё раз.",
+        ) from None
+    return fallback
 
 
 def cut_filter(pieces: list[tuple[float, float]], audio: bool, post: str | None = None) -> str:
