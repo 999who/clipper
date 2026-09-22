@@ -310,6 +310,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
     добавляет папки `site-packages/nvidia/*/bin` в путь поиска DLL и в `PATH`.
   - Если CUDA 12 и cuDNN 9 уже стоят в системе, пакеты можно удалить — DLL
     найдутся через `PATH`.
+- **Выбор ffmpeg.** Ищется только в PATH (текущая папка не просматривается), перебираются все найденные сборки в порядке PATH. Берётся первая, у которой в `ffmpeg -buildconf` есть `--enable-libass`; если такой нет — первая по PATH. `ffprobe` берётся из той же папки. `clipper doctor` показывает пропущенные сборки без libass.
 - **OpenCV.** Ставится только `opencv-contrib-python` — его требует mediapipe.
   Отдельный `opencv-python` конфликтовал бы с ним: оба пишут в модуль `cv2`.
 - **mediapipe 1.0.** Устаревшего `mp.solutions` больше нет, используется только

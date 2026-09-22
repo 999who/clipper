@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -36,6 +36,13 @@ class Tool:
     name: str
     path: str
     version: str
+    libass: bool | None = None  # только для ffmpeg: собран ли с libass (None — неизвестно)
+
+
+@dataclass(frozen=True)
+class FfmpegCandidate:
+    path: str
+    libass: bool | None
 
 
 @dataclass(frozen=True)
@@ -85,31 +92,106 @@ def ffmpeg_install_hint() -> str:
     return "Установите ffmpeg: sudo apt install ffmpeg (или пакетным менеджером вашего дистрибутива)"
 
 
-def find_tool(name: str) -> Tool | None:
-    """Найти ffmpeg/ffprobe в PATH и узнать версию."""
-    path = shutil.which(name)
-    if path is None:
-        return None
-    version = "?"
+def find_executables(name: str, search_path: str | None = None) -> list[str]:
+    """Все исполняемые файлы `name` в каталогах PATH, в порядке PATH, без повторов.
+
+    В отличие от shutil.which, текущая папка не просматривается (на Windows which
+    заглядывает в неё раньше PATH), а находится не первый файл, а все.
+    """
+    if search_path is None:
+        search_path = os.environ.get("PATH", "")
+    if sys.platform == "win32":
+        exts = [ext for ext in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep) if ext]
+        exts = [""] if name.lower().endswith(tuple(e.lower() for e in exts)) else exts
+    else:
+        exts = [""]
+    found: list[str] = []
+    seen: set[str] = set()
+    for directory in search_path.split(os.pathsep):
+        directory = directory.strip().strip('"')
+        if not directory:
+            continue
+        for ext in exts:
+            candidate = os.path.join(directory, name + ext)
+            if not os.path.isfile(candidate) or not os.access(candidate, os.X_OK):
+                continue
+            key = os.path.normcase(os.path.realpath(candidate))
+            if key not in seen:
+                seen.add(key)
+                found.append(candidate)
+    return found
+
+
+def tool_version(path: str) -> str:
+    """Версия ffmpeg/ffprobe из `-version` («7.1», «2026-09-21-git-…»)."""
     try:
         result = run_command([path, "-hide_banner", "-version"], timeout=15)
-        match = re.search(r"version\s+(\S+)", result.stdout)
-        if match:
-            version = match.group(1)
     except OSError:
-        pass
-    return Tool(name, path, version)
+        return "?"
+    match = re.search(r"version\s+(\S+)", result.stdout)
+    return match.group(1) if match else "?"
+
+
+def buildconf_has_libass(buildconf: str) -> bool:
+    """Собран ли ffmpeg с libass — по выводу `ffmpeg -buildconf`."""
+    return "--enable-libass" in buildconf
+
+
+def ffmpeg_has_libass(path: str) -> bool | None:
+    """Есть ли в этой сборке libass (нужна для вшивания субтитров). None — не удалось узнать."""
+    try:
+        result = run_command([path, "-hide_banner", "-buildconf"], timeout=15)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return buildconf_has_libass(result.stdout + result.stderr)
+
+
+def ffmpeg_candidates(
+    search_path: str | None = None,
+    probe: Callable[[str], bool | None] = ffmpeg_has_libass,
+) -> list[FfmpegCandidate]:
+    """Все ffmpeg из PATH (в порядке PATH) с отметкой, есть ли в них libass."""
+    return [FfmpegCandidate(path, probe(path)) for path in find_executables("ffmpeg", search_path)]
+
+
+def choose_ffmpeg(candidates: Sequence[FfmpegCandidate]) -> FfmpegCandidate | None:
+    """Первая по PATH сборка с libass; если такой нет — просто первая по PATH."""
+    for candidate in candidates:
+        if candidate.libass:
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def find_ffmpeg(search_path: str | None = None) -> Tool | None:
+    """Выбрать ffmpeg: только из PATH, сборки с libass важнее более ранних без неё."""
+    chosen = choose_ffmpeg(ffmpeg_candidates(search_path))
+    if chosen is None:
+        return None
+    return Tool("ffmpeg", chosen.path, tool_version(chosen.path), chosen.libass)
+
+
+def find_ffprobe(ffmpeg: Tool | None = None, search_path: str | None = None) -> Tool | None:
+    """ffprobe из той же папки, что выбранный ffmpeg, иначе — первый по PATH."""
+    paths = find_executables("ffprobe", search_path)
+    if ffmpeg is not None:
+        folder = os.path.normcase(os.path.dirname(os.path.realpath(ffmpeg.path)))
+        paths.sort(key=lambda p: os.path.normcase(os.path.dirname(os.path.realpath(p))) != folder)
+    if not paths:
+        return None
+    return Tool("ffprobe", paths[0], tool_version(paths[0]))
 
 
 def require_ffmpeg() -> Tool:
-    tool = find_tool("ffmpeg")
+    tool = find_ffmpeg()
     if tool is None:
         raise DependencyError("ffmpeg не найден в PATH.", hint=ffmpeg_install_hint())
     return tool
 
 
 def require_ffprobe() -> Tool:
-    tool = find_tool("ffprobe")
+    tool = find_ffprobe(find_ffmpeg())
     if tool is None:
         raise DependencyError("ffprobe не найден в PATH (он входит в комплект ffmpeg).", hint=ffmpeg_install_hint())
     return tool

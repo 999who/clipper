@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 from datetime import date
@@ -75,8 +76,8 @@ def test_setup_cuda_dlls_does_nothing_outside_windows():
     assert env.setup_cuda_dlls() == []
 
 
-def test_require_ffmpeg_explains_how_to_install(monkeypatch):
-    monkeypatch.setattr(env.shutil, "which", lambda name: None)
+def test_require_ffmpeg_explains_how_to_install(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     with pytest.raises(DependencyError) as err:
         env.require_ffmpeg()
     assert "ffmpeg" in err.value.message
@@ -93,3 +94,63 @@ def test_nvidia_gpus_parses_nvidia_smi(monkeypatch):
     assert gpu.name == "NVIDIA GeForce RTX 3060"
     assert gpu.memory_total_mb == 12288
     assert gpu.memory_free_mb == 11188
+
+
+def make_fake_ffmpeg(folder, libass: bool, name: str = "ffmpeg"):
+    """Фальшивый ffmpeg: печатает версию и конфигурацию сборки на любые аргументы."""
+    folder.mkdir(parents=True, exist_ok=True)
+    flag = "--enable-libass" if libass else "--disable-libass"
+    lines = [f"{name} version fake-{folder.name}", f"  configuration: --enable-gpl {flag}"]
+    if sys.platform == "win32":
+        path = folder / f"{name}.bat"
+        path.write_text("@echo off\r\n" + "".join(f"echo {line}\r\n" for line in lines), encoding="ascii")
+    else:
+        path = folder / name
+        path.write_text("#!/bin/sh\n" + "".join(f"echo '{line}'\n" for line in lines), encoding="ascii")
+        path.chmod(0o755)
+    return path
+
+
+def test_ffmpeg_with_libass_wins_over_earlier_build_without_it(tmp_path, monkeypatch):
+    old = make_fake_ffmpeg(tmp_path / "ffmpeg-2026-09-21" / "bin", libass=False)
+    make_fake_ffmpeg(tmp_path / "ffmpeg-2026-09-21" / "bin", libass=False, name="ffprobe")
+    new = make_fake_ffmpeg(tmp_path / "winget" / "links", libass=True)
+    make_fake_ffmpeg(tmp_path / "winget" / "links", libass=True, name="ffprobe")
+    make_fake_ffmpeg(tmp_path, libass=False)  # в текущей папке: не в PATH, брать нельзя
+    search_path = os.pathsep.join([str(old.parent), str(new.parent)])
+    monkeypatch.setenv("PATH", search_path)
+
+    candidates = env.ffmpeg_candidates()
+    assert [(c.path, c.libass) for c in candidates] == [(str(old), False), (str(new), True)]
+
+    tool = env.require_ffmpeg()
+    assert tool.path == str(new)
+    assert tool.libass is True
+    assert tool.version == "fake-links"
+    assert env.find_ffprobe(tool).path == str(new.parent / new.name.replace("ffmpeg", "ffprobe"))
+
+
+def test_ffmpeg_first_in_path_is_kept_when_libass_is_nowhere(tmp_path, monkeypatch):
+    first = make_fake_ffmpeg(tmp_path / "a", libass=False)
+    make_fake_ffmpeg(tmp_path / "b", libass=False)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(tmp_path / "a"), str(tmp_path / "b")]))
+    tool = env.find_ffmpeg()
+    assert tool.path == str(first)
+    assert tool.libass is False
+
+
+def test_choose_ffmpeg_keeps_path_order_among_libass_builds():
+    candidates = [
+        env.FfmpegCandidate("/a/ffmpeg", False),
+        env.FfmpegCandidate("/b/ffmpeg", None),
+        env.FfmpegCandidate("/c/ffmpeg", True),
+        env.FfmpegCandidate("/d/ffmpeg", True),
+    ]
+    assert env.choose_ffmpeg(candidates).path == "/c/ffmpeg"
+    assert env.choose_ffmpeg(candidates[:2]).path == "/a/ffmpeg"
+    assert env.choose_ffmpeg([]) is None
+
+
+def test_buildconf_parsing():
+    assert env.buildconf_has_libass("  configuration:\n    --enable-gpl\n    --enable-libass\n")
+    assert not env.buildconf_has_libass("  configuration:\n    --enable-gpl\n")

@@ -99,14 +99,25 @@ class _Doctor:
     # --- ffmpeg ---
 
     def ffmpeg_tool(self) -> None:
-        self.ffmpeg = env.find_tool("ffmpeg")
-        if self.ffmpeg is None:
+        candidates = env.ffmpeg_candidates()
+        chosen = env.choose_ffmpeg(candidates)
+        if chosen is None:
             self.add("fail", "не найден в PATH", env.ffmpeg_install_hint())
-        else:
-            self.add("ok", f"{self.ffmpeg.version} — {self.ffmpeg.path}")
+            return
+        self.ffmpeg = env.Tool("ffmpeg", chosen.path, env.tool_version(chosen.path), chosen.libass)
+        self.add("ok", f"{self.ffmpeg.version} — {self.ffmpeg.path}")
+        earlier = [c.path for c in candidates[: candidates.index(chosen)] if c.libass is False]
+        if earlier:
+            self.add(
+                "info",
+                "в PATH раньше стоит сборка без libass, она пропущена: " + "; ".join(earlier),
+                "Уберите её папку из PATH (часто она в системном PATH — он идёт раньше пользовательского). "
+                "Порядок показывает команда: where.exe ffmpeg",
+                name="ffmpeg без libass",
+            )
 
     def ffprobe_tool(self) -> None:
-        tool = env.find_tool("ffprobe")
+        tool = env.find_ffprobe(self.ffmpeg)
         if tool is None:
             self.add("fail", "не найден в PATH (входит в комплект ffmpeg)", env.ffmpeg_install_hint())
         else:
@@ -116,13 +127,15 @@ class _Doctor:
         if self.ffmpeg is None:
             self.add("info", "пропущено — нет ffmpeg")
             return
-        filters = list_filters(self.ffmpeg.path)
-        if {"ass", "subtitles"} <= filters:
+        has_libass = self.ffmpeg.libass
+        if has_libass is None:  # -buildconf не сработал — смотрим список фильтров
+            has_libass = {"ass", "subtitles"} <= list_filters(self.ffmpeg.path)
+        if has_libass:
             self.add("ok", "фильтр subtitles есть — субтитры можно вшивать")
         else:
             self.add(
                 "fail",
-                "сборка ffmpeg без libass — субтитры не получится вшить",
+                "ни одна сборка ffmpeg в PATH не собрана с libass — субтитры не получится вшить",
                 "Поставьте полную сборку ffmpeg (например, winget install --id Gyan.FFmpeg -e).",
             )
 
