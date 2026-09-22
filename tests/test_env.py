@@ -1,5 +1,4 @@
 import os
-import shutil
 import sys
 from datetime import date
 from types import SimpleNamespace
@@ -49,9 +48,23 @@ def test_failure_reason_prefers_the_encoder_line():
     assert failure_reason("", "h264_nvenc", 1) == "код выхода 1"
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="нет ffmpeg")
+def same_path(a, b) -> bool:
+    """Сравнение путей без учёта регистра на Windows (там ffmpeg.bat может вернуться как ffmpeg.BAT)."""
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def test_same_path_helper_ignores_case_only_where_the_os_does(tmp_path):
+    target = tmp_path / "ffmpeg.bat"
+    target.write_text("")
+    assert same_path(target, str(target))
+    assert same_path(tmp_path / "ffmpeg.BAT", target) == (sys.platform == "win32")
+
+
 def test_real_ffmpeg_has_the_filters_we_need():
-    filters = list_filters(shutil.which("ffmpeg"))
+    tool = env.find_ffmpeg()  # та же сборка, которую выберет программа
+    if tool is None:
+        pytest.skip("нет ffmpeg в PATH")
+    filters = list_filters(tool.path)
     assert {"crop", "scale", "vstack", "silencedetect"} <= filters
 
 
@@ -121,13 +134,15 @@ def test_ffmpeg_with_libass_wins_over_earlier_build_without_it(tmp_path, monkeyp
     monkeypatch.setenv("PATH", search_path)
 
     candidates = env.ffmpeg_candidates()
-    assert [(c.path, c.libass) for c in candidates] == [(str(old), False), (str(new), True)]
+    assert len(candidates) == 2
+    assert same_path(candidates[0].path, old) and candidates[0].libass is False
+    assert same_path(candidates[1].path, new) and candidates[1].libass is True
 
     tool = env.require_ffmpeg()
-    assert tool.path == str(new)
+    assert same_path(tool.path, new)
     assert tool.libass is True
     assert tool.version == "fake-links"
-    assert env.find_ffprobe(tool).path == str(new.parent / new.name.replace("ffmpeg", "ffprobe"))
+    assert same_path(env.find_ffprobe(tool).path, new.parent / new.name.replace("ffmpeg", "ffprobe"))
 
 
 def test_ffmpeg_first_in_path_is_kept_when_libass_is_nowhere(tmp_path, monkeypatch):
@@ -135,7 +150,7 @@ def test_ffmpeg_first_in_path_is_kept_when_libass_is_nowhere(tmp_path, monkeypat
     make_fake_ffmpeg(tmp_path / "b", libass=False)
     monkeypatch.setenv("PATH", os.pathsep.join([str(tmp_path / "a"), str(tmp_path / "b")]))
     tool = env.find_ffmpeg()
-    assert tool.path == str(first)
+    assert same_path(tool.path, first)
     assert tool.libass is False
 
 
