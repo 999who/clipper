@@ -1,6 +1,10 @@
 """Виджеты TUI: список настроек с выбором по Enter, окна выбора и ввода, полоса heatmap."""
 
+import os
+import string
+import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from rich.text import Text
@@ -126,6 +130,9 @@ class SettingsList(OptionList):
         value = self.current(setting.key)
         if setting.kind == "bool":
             self.apply(setting, not value)
+        elif setting.kind == "folder":
+            start = Path(str(value or ".")).expanduser()
+            self.app.push_screen(FolderModal(setting.label, start), lambda v: self._folder(setting, v))
         elif setting.kind == "choice":
             choices = choices_for(setting, self.store.config())
             self.app.push_screen(ChoiceModal(setting.label, choices, value), lambda v: self._chosen(setting, v))
@@ -140,6 +147,10 @@ class SettingsList(OptionList):
     def _chosen(self, setting: Setting, value: Any) -> None:
         if value is not CANCEL:
             self.apply(setting, value)
+
+    def _folder(self, setting: Setting, folder: Any) -> None:
+        if folder is not CANCEL:
+            self.apply(setting, str(folder))
 
     def _typed(self, setting: Setting, text: Any) -> None:
         if text is not CANCEL:
@@ -265,6 +276,145 @@ class MenuModal(ModalScreen[Any]):
 
     def action_cancel(self) -> None:
         self.dismiss(CANCEL)
+
+
+class FolderModal(ModalScreen[Any]):
+    """Выбор папки стрелками и Enter: войти в папку, наверх, новая папка, диски, путь вручную."""
+
+    BINDINGS = [Binding("escape", "cancel", "Отмена"), Binding("backspace", "up", "Наверх", show=False)]
+
+    def __init__(self, title: str, start: Path) -> None:
+        super().__init__()
+        self.title_text = title
+        self.current: Path | None = existing_folder(start)  # None — список дисков (Windows)
+        self.entries: list[Path] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog wide"):
+            yield Label(self.title_text, classes="dialog-title")
+            yield Label("", id="folder-path")
+            yield OptionList(id="folders")
+            yield Label("Enter — открыть папку; «✓ Выбрать эту папку» — готово; Esc — отмена", classes="dialog-help")
+
+    def on_mount(self) -> None:
+        self._show()
+        self.query_one("#folders", OptionList).focus()
+
+    def _show(self) -> None:
+        options: list[Option | None] = []
+        if self.current is None:
+            self.query_one("#folder-path", Label).update("Диски")
+            self.entries = windows_drives()
+            options += [Option(f"▸ {drive}", id=f"dir:{i}") for i, drive in enumerate(self.entries)]
+        else:
+            self.query_one("#folder-path", Label).update(Text(str(self.current), style="bold cyan"))
+            options.append(Option(Text("✓ Выбрать эту папку", style="bold"), id="pick"))
+            if self.current.parent != self.current:
+                options.append(Option("↑ Наверх", id="up"))
+            elif sys.platform == "win32":
+                options.append(Option("↑ Другой диск", id="up"))
+            options += [Option("＋ Новая папка…", id="new"), Option("Ввести путь вручную…", id="type"), None]
+            self.entries = subfolders(self.current)
+            options += [Option(f"▸ {path.name}", id=f"dir:{i}") for i, path in enumerate(self.entries)]
+            if not self.entries:
+                options.append(Option(Text("(папок нет)", style="dim"), disabled=True))
+        folders = self.query_one("#folders", OptionList)
+        folders.set_options(options)
+        folders.highlighted = 0
+
+    @on(OptionList.OptionSelected, "#folders")
+    def _selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        key = event.option.id or ""
+        if key == "pick":
+            self.dismiss(self.current)
+        elif key == "up":
+            self.action_up()
+        elif key.startswith("dir:"):
+            self.current = self.entries[int(key[4:])]
+            self._show()
+        elif key == "new":
+            self.app.push_screen(InputModal("Новая папка", "", f"Будет создана в {self.current}", self._check_name),
+                                 self._created)  # fmt: skip
+        elif key == "type":
+            self.app.push_screen(
+                InputModal("Путь к папке", str(self.current), "Если папки нет — она будет создана.", self._check_path),
+                self._typed,
+            )
+
+    def action_up(self) -> None:
+        if self.current is None:
+            return
+        if self.current.parent != self.current:
+            self.current = self.current.parent
+        elif sys.platform == "win32":
+            self.current = None
+        self._show()
+
+    def _check_name(self, text: str) -> str | None:
+        name = text.strip()
+        if not name or any(ch in name for ch in '<>:"/\\|?*'):
+            return 'Имя папки без символов < > : " / \\ | ? *'
+        return None
+
+    def _created(self, name: Any) -> None:
+        if name is CANCEL or self.current is None:
+            return
+        folder = self.current / name.strip()
+        try:
+            folder.mkdir(exist_ok=True)
+        except OSError as exc:
+            self.app.notify(f"Не удалось создать папку: {exc.strerror or exc}", severity="error")
+            return
+        self.current = folder
+        self._show()
+
+    def _check_path(self, text: str) -> str | None:
+        folder = Path(text.strip()).expanduser()
+        if not text.strip():
+            return "Введите путь, например D:\\Клипы"
+        if folder.exists() and not folder.is_dir():
+            return "Это файл, а нужна папка."
+        return None
+
+    def _typed(self, text: Any) -> None:
+        if text is CANCEL:
+            return
+        folder = Path(text.strip()).expanduser()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.app.notify(f"Не удалось создать папку: {exc.strerror or exc}", severity="error")
+            return
+        self.dismiss(folder.resolve())
+
+    def action_cancel(self) -> None:
+        self.dismiss(CANCEL)
+
+
+def existing_folder(path: Path) -> Path:
+    """Ближайшая существующая папка (сама path или её родитель)."""
+    path = path.expanduser().resolve()
+    while not path.is_dir() and path.parent != path:
+        path = path.parent
+    return path
+
+
+def subfolders(folder: Path, limit: int = 500) -> list[Path]:
+    try:
+        entries = [p for p in folder.iterdir() if not p.name.startswith((".", "$")) and p.is_dir()]
+    except OSError:
+        return []
+    return sorted(entries, key=lambda p: p.name.lower())[:limit]
+
+
+def windows_drives() -> list[Path]:
+    if hasattr(os, "listdrives"):  # Python 3.12+ на Windows
+        try:
+            return [Path(d) for d in os.listdrives()]
+        except OSError:
+            pass
+    return [Path(f"{letter}:\\") for letter in string.ascii_uppercase if Path(f"{letter}:\\").exists()]
 
 
 # --- heatmap -----------------------------------------------------------------------------

@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from clipper.core.config import Config, load_config, parse_value
 
-Kind = Literal["choice", "bool", "int", "float", "text", "list"]
+Kind = Literal["choice", "bool", "int", "float", "text", "list", "folder"]
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,11 @@ LANGUAGES = (
     ("fr", "французский"),
 )
 
+OUTPUT = Setting("paths.output", "Папка для клипов", "folder", flag="--out",
+                 help="Клипы лягут в эту папку, в подпапку с id видео. Проект запомнит её.")  # fmt: skip
+
 ANALYZE: tuple[Item, ...] = (
+    OUTPUT,
     Setting("select.mode", "Как искать моменты", "choice",
             (("heatmap", "по графику «Самые популярные фрагменты»"), ("keywords", "по ключевым словам")),
             flag="--mode-select",
@@ -93,8 +97,7 @@ RENDER: tuple[Item, ...] = (
     Setting("render.encoder", "Кодировщик", "choice",
             (("auto", "авто (NVENC, если работает)"), ("nvenc", "NVENC — видеокарта"), ("x264", "x264 — процессор")),
             flag="--encoder"),
-    Setting("paths.output", "Папка для клипов", "text", flag="--out",
-            help="Клипы лягут в эту папку, в подпапку с id видео."),
+    OUTPUT,
 )  # fmt: skip
 
 
@@ -131,6 +134,8 @@ def show_value(setting: Setting, value: Any, cfg: Config | None = None) -> str:
         return "—" if value is None else str(value)
     if setting.kind == "list":
         return ", ".join(value) if value else "—"
+    if setting.kind == "folder" and value:
+        return folder_text(value)
     if value is None or value == "":
         return "—"
     if isinstance(value, float):
@@ -142,15 +147,22 @@ def edit_text(setting: Setting, value: Any) -> str:
     """Значение для поля ввода."""
     if setting.kind == "list":
         return ", ".join(value or [])
+    if setting.kind == "folder" and value:
+        return folder_text(value)
     if value is None:
         return ""
     return f"{value:g}" if isinstance(value, float) else str(value)
 
 
+def folder_text(value: Any) -> str:
+    """Папка полным путём: «output» → C:\\clipper\\output."""
+    return str(Path(str(value)).expanduser().resolve())
+
+
 def parse_input(setting: Setting, text: str) -> Any:
     """Текст из поля ввода → значение для переопределения (проверит load_config)."""
     text = text.strip()
-    if setting.kind in ("text", "list"):
+    if setting.kind in ("text", "list", "folder"):
         return text or None
     return parse_value(text)
 

@@ -363,7 +363,9 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
   выбирает NVENC, если тестовое кодирование прошло, иначе libx264.
 
 ### 7. Дополнительно
-- `--out` задаёт папку вывода (`paths.output`): клипы лежат в `<out>/<id>/`.
+- `--out` задаёт папку вывода: клипы лежат в `<out>/<id>/`. Папка запоминается в
+  `project.json` (поле `output`). Порядок: `--out` (или выбор в TUI) → `output`
+  проекта → `paths.output`. У `analyze` и `run` `--out` сразу пишется в проект.
 - Обложки `clip_NN.jpg` и склейка клипов в один ролик были, но убраны по
   решению пользователя. Старые ключи `render.thumbnails` и `render.concat` в
   `clipper.yaml` дают понятную ошибку с подсказкой (`config.REMOVED_KEYS`).
@@ -372,7 +374,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 
 | Команда | Что делает | Этап |
 |---|---|---|
-| `clipper` | справка | 0 ✅ |
+| `clipper` | интерфейс в терминале (= `clipper tui`); справка — `clipper --help` | TUI ✅ |
 | `clipper doctor` | проверка окружения: Python, ffmpeg (libass, NVENC), yt-dlp + Deno, GPU/CUDA/cuBLAS/cuDNN, пакеты | 0 ✅ |
 | `clipper config [--init]` | итоговые параметры / создать `clipper.yaml` из примера | 0 ✅ |
 | `clipper download SRC` | загрузка видео и heatmap, мини-график в терминале | 1 ✅ |
@@ -450,9 +452,10 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | 7 ✅ | `--out` | `clipper render --out D:\clips` |
 | TUI ✅ | интерфейс в терминале | `clipper tui` |
 
-## TUI (`clipper tui`)
+## TUI (`clipper` или `clipper tui`)
 
-Интерфейс в терминале на Textual поверх того же ядра. Всё делается стрелками
+Интерфейс в терминале на Textual поверх того же ядра. `clipper` без аргументов
+запускает именно его. Всё делается стрелками
 и Enter, без команд. Ядро не менялось, кроме двух функций для экранов:
 `pipeline.list_projects` и `pipeline.save_edited_project`.
 
@@ -472,7 +475,11 @@ clipper/tui/
 - **Экраны.**
   - Главное меню: новое видео, продолжить последний проект, все проекты,
     проверка окружения.
-  - «Новое видео» — форма `analyze`, дальше прогресс, потом экран проекта.
+  - «Новое видео» — форма `analyze` (первой строкой — папка для клипов), дальше
+    прогресс, потом экран проекта. Папка выбирается окном `FolderModal`:
+    «▸ папка» — войти, «↑ Наверх», «＋ Новая папка…», путь вручную, диски в
+    Windows (`os.listdrives`). Она пишется в `project.json` (`output`), и при
+    открытии проекта TUI подставляет её в форму рендера.
   - Проект: полоса heatmap с отметками клипов, таблица клипов, текст выбранного.
     Enter — окно клипа (вкл/выкл, начало и конец вводом или сдвигом на ±1 с),
     пробел — вкл/выкл, `s` — сохранить, `r` — нарезать, `c` — «сколько клипов»:

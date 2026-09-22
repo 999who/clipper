@@ -188,6 +188,8 @@ class ProjectScreen(Screen[Any]):
             self.app.notify(exc.message, title="Проект не открывается", severity="error", timeout=10)
             self.app.pop_screen()
             return
+        if self.project.output:  # у проекта своя папка для клипов — она же в форме рендера
+            self.app.store.try_set("paths.output", self.project.output)
         source = load_source(self.path.parent)
         self.heatmap = source.heatmap if source else None
         self.sub_title = self.project.source.title

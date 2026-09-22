@@ -166,9 +166,10 @@ class AnalyzeScreen(Screen[Any]):
             settings.highlighted = 0
             return
         cfg = self.app.store.config()
-        self.app.push_screen(
-            ProgressScreen("Поиск моментов", lambda reporter: pipeline.analyze(source, cfg, reporter)), self._done
+        job = ProgressScreen(
+            "Поиск моментов", lambda reporter: pipeline.analyze(source, cfg, reporter, output=cfg.paths.output)
         )
+        self.app.push_screen(job, self._done)
 
     def _done(self, result: Any) -> None:
         if not result:
@@ -221,7 +222,9 @@ class RenderScreen(Screen[Any]):
     def _run(self, event: SettingsList.Action) -> None:
         cfg = self.app.store.config()
         path = str(self.project_path)
-        job = ProgressScreen("Нарезка клипов", lambda reporter: pipeline.render(cfg, reporter, path))
+        job = ProgressScreen(
+            "Нарезка клипов", lambda reporter: pipeline.render(cfg, reporter, path, output=cfg.paths.output)
+        )
         self.app.push_screen(job, self._rendered)
 
     def _rendered(self, result: Any) -> None:

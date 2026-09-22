@@ -45,8 +45,13 @@ def analyze(
     *,
     force: bool = False,
     engine_factory: EngineFactory | None = None,
+    output: str | Path | None = None,
 ) -> tuple[Project, Path]:
-    """Видео → моменты → распознавание → project.json. Возвращает проект и путь к файлу."""
+    """Видео → моменты → распознавание → project.json. Возвращает проект и путь к файлу.
+
+    `output` — папка для клипов этого проекта (запоминается в project.json). Без неё
+    остаётся папка прежнего project.json, если он был.
+    """
     source = prepare_source(source_input, cfg, reporter)
     work_dir = work_dir_for(cfg, source.id)
     select = cfg.select
@@ -102,6 +107,7 @@ def analyze(
         language=transcript.language,
         created=datetime.now().isoformat(timespec="seconds"),
         clips=clips,
+        output=_folder(output) if output else _previous_output(work_dir / PROJECT_FILENAME),
     )
     path = work_dir / PROJECT_FILENAME
     if path.exists():
@@ -226,6 +232,17 @@ def save_edited_project(path: Path, project: Project) -> Path:
     return save_project(path.parent, project)
 
 
+def _folder(path: str | Path) -> str:
+    return str(Path(path).expanduser().resolve())
+
+
+def _previous_output(path: Path) -> str | None:
+    try:
+        return load_project(path).output if path.is_file() else None
+    except ProjectError:
+        return None
+
+
 def open_project(path: Path) -> Project:
     try:
         return load_project(path)
@@ -240,12 +257,24 @@ def open_project(path: Path) -> Project:
 
 
 def render(
-    cfg: Config, reporter: Reporter, project: str | None = None, only: set[int] | None = None
+    cfg: Config,
+    reporter: Reporter,
+    project: str | None = None,
+    only: set[int] | None = None,
+    *,
+    output: str | Path | None = None,
 ) -> tuple[Project, Path, list[RenderResult]]:
-    """project.json → output/<id>/clip_NN.mp4. Возвращает проект, папку вывода и результаты."""
+    """project.json → <папка>/<id>/clip_NN.mp4. Возвращает проект, папку вывода и результаты.
+
+    Папка: `output` (флаг --out или выбор в TUI — запоминается в project.json) →
+    output из project.json → paths.output.
+    """
     path = find_project(cfg, project)
     loaded = open_project(path)
     reporter.info(f"Проект: {path}")
+    if output and _folder(output) != loaded.output:
+        loaded.output = _folder(output)
+        save_project(path.parent, loaded)
     results = render_project(loaded, path.parent, cfg, reporter, only)
     return loaded, output_dir(cfg, loaded), results
 
@@ -257,8 +286,9 @@ def run(
     *,
     force: bool = False,
     engine_factory: EngineFactory | None = None,
+    output: str | Path | None = None,
 ) -> tuple[Project, Path, list[RenderResult]]:
     """analyze + render одной командой."""
-    project, path = analyze(source_input, cfg, reporter, force=force, engine_factory=engine_factory)
+    project, path = analyze(source_input, cfg, reporter, force=force, engine_factory=engine_factory, output=output)
     results = render_project(project, path.parent, cfg, reporter)
     return project, output_dir(cfg, project), results

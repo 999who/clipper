@@ -22,7 +22,7 @@ from clipper.tui.app import ClipperApp  # noqa: E402
 from clipper.tui.progress import ProgressScreen  # noqa: E402
 from clipper.tui.project import ClipModal, ProjectScreen  # noqa: E402
 from clipper.tui.screens import AnalyzeScreen, HomeScreen, RenderScreen, ResultsScreen  # noqa: E402
-from clipper.tui.widgets import ChoiceModal, InputModal, heatmap_text  # noqa: E402
+from clipper.tui.widgets import ChoiceModal, FolderModal, InputModal, heatmap_text  # noqa: E402
 
 SIZE = (110, 40)
 
@@ -120,7 +120,7 @@ def test_home_menu_and_analyze_form(tmp_path, monkeypatch):
             await pilot.press("enter")  # ссылка → окно ввода
             assert isinstance(app.screen, InputModal)
             await pilot.press(*"D:/v.mp4", "enter")
-            await pilot.press("down", "down", "down", "enter")  # «Сколько клипов»
+            await pilot.press("down", "down", "down", "down", "enter")  # «Сколько клипов»
             await pilot.press("1", "5", "enter")  # старое значение выделено — ввод его заменяет
             await pilot.pause()
             command = str(app.screen.query_one("#command").render())
@@ -141,7 +141,7 @@ def test_input_modal_shows_validation_error(tmp_path):
         app = ClipperApp(make_store(tmp_path))
         async with app.run_test(size=SIZE) as pilot:
             await pilot.pause()
-            await pilot.press("enter", "down", "down", "down", "down", "enter")  # «Длина клипа от»
+            await pilot.press("enter", "down", "down", "down", "down", "down", "enter")  # «Длина клипа от»
             assert isinstance(app.screen, InputModal)
             await pilot.press("9", "0", "enter")  # больше max_len
             await pilot.pause()
@@ -188,8 +188,8 @@ def test_render_flow_and_results(tmp_path, monkeypatch):
     project_path = make_project(tmp_path)
     seen = {}
 
-    def fake_render(cfg, reporter, project=None, only=None):
-        seen["project"], seen["aspect"] = project, cfg.reframe.aspect
+    def fake_render(cfg, reporter, project=None, only=None, output=None):
+        seen["project"], seen["aspect"], seen["output"] = project, cfg.reframe.aspect, output
         reporter.warning("Паузы не найдены")
         folder = tmp_path / "out" / "vid"
         return (
@@ -226,7 +226,7 @@ def test_render_flow_and_results(tmp_path, monkeypatch):
             assert isinstance(app.screen, ProjectScreen)
 
     run(scenario())
-    assert seen == {"project": str(project_path), "aspect": "1:1"}
+    assert seen == {"project": str(project_path), "aspect": "1:1", "output": "output"}
 
 
 def test_progress_shows_errors_and_cancels(tmp_path):
@@ -314,3 +314,58 @@ def test_project_recount_reuses_search_and_transcript_settings(tmp_path, monkeyp
 
     run(scenario())
     assert seen == {"source": "v.mp4", "clips": 7, "mode": "heatmap", "lang": "ru", "verbatim": True}
+
+
+def test_output_folder_is_chosen_with_arrows_and_enter(tmp_path, monkeypatch):
+    (tmp_path / "clips").mkdir()
+    (tmp_path / "zzz").mkdir()
+    seen = {}
+
+    def fake_analyze(source, cfg, reporter, output=None, **kwargs):
+        seen["output"] = output
+        return None, make_project(tmp_path)
+
+    monkeypatch.setattr(pipeline, "analyze", fake_analyze)
+
+    async def scenario():
+        app = ClipperApp(make_store(tmp_path, **{"paths.output": str(tmp_path / "нет-такой")}))
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")  # «Новое видео»
+            await pilot.press("enter", *"v.mp4", "enter")  # ссылка
+            await pilot.press("down", "enter")  # «Папка для клипов»
+            assert isinstance(app.screen, FolderModal)
+            modal = app.screen
+            assert modal.current == tmp_path.resolve()  # папки нет — начинаем с ближайшей существующей
+            await pilot.press("down", "down", "down", "down", "enter")  # ▸ clips
+            assert modal.current == (tmp_path / "clips").resolve()
+            await pilot.press("down", "down", "enter")  # «＋ Новая папка…»
+            await pilot.press(*"Шортсы", "enter")
+            await pilot.pause()
+            assert modal.current == (tmp_path / "clips" / "Шортсы").resolve() and modal.current.is_dir()
+            await pilot.press("enter")  # «✓ Выбрать эту папку»
+            await pilot.pause()
+            chosen = str((tmp_path / "clips" / "Шортсы").resolve())
+            assert app.store.value("paths.output") == chosen
+            assert chosen in str(app.screen.query_one("#settings").get_option("set:paths.output").prompt)
+            await pilot.press("end", "enter")  # «▶ Найти моменты»
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert seen["output"] == chosen
+
+    run(scenario())
+
+
+def test_project_remembers_output_folder(tmp_path, monkeypatch):
+    project_path = make_project(tmp_path)
+    folder = tmp_path / "Мои клипы"
+    monkeypatch.setattr(pipeline, "render_project", lambda project, work_dir, cfg, reporter, only=None: [])
+    cfg = st.build_config(None, {"paths.workdir": str(tmp_path / "work")})
+
+    from clipper.core.events import Reporter
+
+    _, out, _ = pipeline.render(cfg, Reporter(), str(project_path), output=folder)
+    assert out == folder.resolve() / "vid"
+    assert pipeline.open_project(project_path).output == str(folder.resolve())
+    _, again, _ = pipeline.render(cfg, Reporter(), str(project_path))  # без --out — папка проекта
+    assert again == folder.resolve() / "vid"

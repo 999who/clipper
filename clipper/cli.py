@@ -317,7 +317,7 @@ OutOption = Annotated[
     Optional[str],
     typer.Option(
         "--out",
-        help="Папка для готовых клипов (по умолчанию output).",
+        help="Папка для готовых клипов (по умолчанию output). Проект её запоминает.",
         show_default=False,
         rich_help_panel=PANEL_RENDER,
     ),
@@ -486,6 +486,7 @@ def analyze(
     lang: LangOption = None,
     verbatim: VerbatimOption = None,
     force: ForceOption = False,
+    out: OutOption = None,
     config: ConfigOption = None,
     set_items: SetOption = None,
     verbose: VerboseOption = False,
@@ -496,7 +497,7 @@ def analyze(
         flags["transcribe.verbatim"] = verbatim
         cfg, _ = build_config(config, set_items, flags)
         with ConsoleSink() as sink:
-            project, path = pipeline.analyze(source, cfg, Reporter(sink, token), force=force)
+            project, path = pipeline.analyze(source, cfg, Reporter(sink, token), force=force, output=out)
         print_analysis(project, path)
 
 
@@ -531,7 +532,7 @@ def render(
         flags.update(_frame_flags(frame_mode, aspect, crop, background, layout))
         cfg, _ = build_config(config, set_items, flags)
         with ConsoleSink() as sink:
-            _, folder, results = pipeline.render(cfg, Reporter(sink, token), project, _clip_ids(clip))
+            _, folder, results = pipeline.render(cfg, Reporter(sink, token), project, _clip_ids(clip), output=out)
         print_render(results, folder)
     if any(result.path is None for result in results):
         raise typer.Exit(1)
@@ -577,7 +578,7 @@ def run(
         flags.update(_frame_flags(frame_mode, aspect, crop, background, layout))
         cfg, _ = build_config(config, set_items, flags)
         with ConsoleSink() as sink:
-            project, folder, results = pipeline.run(source, cfg, Reporter(sink, token), force=force)
+            project, folder, results = pipeline.run(source, cfg, Reporter(sink, token), force=force, output=out)
         print_analysis(project, pipeline.work_dir_for(cfg, project.source.id) / "project.json", next_step=False)
         print_render(results, folder)
     if any(result.path is None for result in results):
@@ -634,6 +635,5 @@ def tui(
 
 def main() -> None:
     setup_stdio()
-    # Без аргументов — справка с кодом выхода 0 (click в этом случае возвращает 2).
-    # Позже здесь будет запуск интерактивного интерфейса.
-    app(sys.argv[1:] or ["--help"], prog_name="clipper")
+    # Без аргументов — интерфейс в терминале (clipper tui). Справка — clipper --help.
+    app(sys.argv[1:] or ["tui"], prog_name="clipper")

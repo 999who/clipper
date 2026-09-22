@@ -19,12 +19,16 @@ def test_help_lists_commands():
     assert "config" in result.output
 
 
-def test_main_without_arguments_prints_help(monkeypatch, capsys):
+def test_main_without_arguments_opens_tui(monkeypatch):
+    import clipper.tui
+
+    started = {}
+    monkeypatch.setattr(clipper.tui, "run_tui", lambda path, overrides: started.update(path=path, overrides=overrides))
     monkeypatch.setattr(sys, "argv", ["clipper"])
     with pytest.raises(SystemExit) as exit_info:
         cli.main()
     assert exit_info.value.code == 0
-    assert "doctor" in capsys.readouterr().out
+    assert started == {"path": None, "overrides": {}}
 
 
 def test_config_shows_overrides():

@@ -371,6 +371,7 @@ class Project:
     language: str | None
     created: str
     clips: list[Clip]
+    output: str | None = None  # папка для клипов этого проекта; None — paths.output из конфига
 
     def to_dict(self) -> dict[str, Any]:
         source = self.source.to_dict()
@@ -379,8 +380,10 @@ class Project:
             "version": PROJECT_VERSION,
             "_help": (
                 "Можно править: start/end клипа (ЧЧ:ММ:СС.мс или секунды), enabled (false — пропустить клип), "
-                "text слов (исправит субтитры). Время слов — секунды от начала исходного видео."
+                "text слов (исправит субтитры), output — папка для клипов. "
+                "Время слов — секунды от начала исходного видео."
             ),
+            "output": self.output,
             "source": source,
             "analysis": {
                 "mode": self.mode,
@@ -481,7 +484,16 @@ def parse_project(data: Any) -> Project:
         language=analysis.get("language"),
         created=str(analysis.get("created") or ""),
         clips=clips,
+        output=_parse_output(data.get("output")),
     )
+
+
+def _parse_output(value: Any) -> str | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if not isinstance(value, str):
+        raise ProjectError("output — путь к папке в кавычках или null")
+    return value.strip()
 
 
 def _parse_clip(raw: Any, index: int, duration: float) -> Clip:

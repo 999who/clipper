@@ -96,7 +96,8 @@ def clip_filename(clip: Clip) -> str:
 
 
 def output_dir(cfg: Config, project: Project) -> Path:
-    return Path(cfg.paths.output).resolve() / project.source.id
+    """Папка клипов: output из project.json (если выбрана) или paths.output, плюс id видео."""
+    return Path(project.output or cfg.paths.output).expanduser().resolve() / project.source.id
 
 
 def choose_encoder(cfg: Config, ffmpeg: str, reporter: Reporter) -> str:
