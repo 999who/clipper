@@ -50,8 +50,8 @@
 # Этап 5 — субтитры.
 # subtitles:
 #   enabled: true
-#   style: capcut            # стиль из clipper/styles/ или путь к своему .yaml
-#   max_words: null          # слов на экране (1–3); null — как в стиле
+#   style: capcut            # стиль из clipper/styles/ или путь к своему .yaml (шрифт, цвета, размер…)
+#   max_words: null          # слов на экране (1–5); null — как в стиле (3)
 
 # Этап 6 — кадрирование.
 # reframe:

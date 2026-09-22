@@ -374,6 +374,32 @@ VerbatimOption = Annotated[
     ),
 ]
 
+PANEL_SUBS = "Субтитры"
+
+SubsOption = Annotated[
+    Optional[bool],
+    typer.Option("--subs/--no-subs", help="Субтитры (по умолчанию включены).", show_default=False,
+                 rich_help_panel=PANEL_SUBS),
+]  # fmt: skip
+StyleOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--style",
+        help="Стиль субтитров: имя из clipper/styles/ (capcut) или путь к своему .yaml.",
+        show_default=False,
+        rich_help_panel=PANEL_SUBS,
+    ),
+]
+MaxWordsOption = Annotated[
+    Optional[int],
+    typer.Option("--max-words", help="Слов на экране, 1–5 (по умолчанию как в стиле: 3).", show_default=False,
+                 rich_help_panel=PANEL_SUBS),
+]  # fmt: skip
+
+
+def _subs_flags(subs, style, max_words) -> dict[str, Any]:
+    return {"subtitles.enabled": subs, "subtitles.style": style, "subtitles.max_words": max_words}
+
 
 def _audio_flags(cut_pauses, pause_detect, silence_db, min_pause, fillers) -> dict[str, Any]:
     return {
@@ -443,6 +469,9 @@ def render(
     silence_db: SilenceDbOption = None,
     min_pause: MinPauseOption = None,
     fillers: FillersOption = None,
+    subs: SubsOption = None,
+    style: StyleOption = None,
+    max_words: MaxWordsOption = None,
     config: ConfigOption = None,
     set_items: SetOption = None,
     verbose: VerboseOption = False,
@@ -451,6 +480,7 @@ def render(
     with _command(verbose) as token:
         flags = {"render.encoder": encoder, "paths.output": out}
         flags.update(_audio_flags(cut_pauses, pause_detect, silence_db, min_pause, fillers))
+        flags.update(_subs_flags(subs, style, max_words))
         cfg, _ = build_config(config, set_items, flags)
         with ConsoleSink() as sink:
             _, folder, results = pipeline.render(cfg, Reporter(sink, token), project, _clip_ids(clip))
@@ -477,6 +507,9 @@ def run(
     silence_db: SilenceDbOption = None,
     min_pause: MinPauseOption = None,
     fillers: FillersOption = None,
+    subs: SubsOption = None,
+    style: StyleOption = None,
+    max_words: MaxWordsOption = None,
     config: ConfigOption = None,
     set_items: SetOption = None,
     verbose: VerboseOption = False,
@@ -487,6 +520,7 @@ def run(
         flags["transcribe.verbatim"] = verbatim
         flags.update({"render.encoder": encoder, "paths.output": out})
         flags.update(_audio_flags(cut_pauses, pause_detect, silence_db, min_pause, fillers))
+        flags.update(_subs_flags(subs, style, max_words))
         cfg, _ = build_config(config, set_items, flags)
         with ConsoleSink() as sink:
             project, folder, results = pipeline.run(source, cfg, Reporter(sink, token), force=force)

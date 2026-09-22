@@ -338,6 +338,16 @@ def _represent_list(dumper: yaml.SafeDumper, data: list[Any]) -> yaml.Node:
 _Dumper.add_representer(list, _represent_list)
 
 
+def read_yaml_file(path: Path) -> Any:
+    """Прочитать YAML тем же загрузчиком, что и конфиг (для файлов стилей)."""
+    return _read_config_file(path)
+
+
+def merge_yaml(obj: Any, data: Any, origin: str) -> None:
+    """Слить словарь из YAML в dataclass `obj` с проверкой ключей и типов (ошибка — ConfigError)."""
+    _apply_layer(obj, data, origin)
+
+
 def _read_config_file(path: Path) -> Any:
     try:
         raw = path.read_bytes()
@@ -521,7 +531,7 @@ def _unknown_key(key: str, cls: type, path: str) -> ConfigError:
     normalized = key.replace("-", "_")
     prefix = f"{path}." if path else ""
     candidates = [prefix + name for name in difflib.get_close_matches(normalized, names, n=1, cutoff=0.6)]
-    if not candidates and not path:
+    if not candidates and not path and cls is Config:
         # Ключ без раздела: `clips` вместо `select.clips`.
         leaves = leaf_paths()
         candidates = [leaf for leaf in leaves if leaf.rsplit(".", 1)[-1] == normalized]
@@ -530,6 +540,8 @@ def _unknown_key(key: str, cls: type, path: str) -> ConfigError:
         hint = f"Возможно, вы имели в виду «{candidates[0]}»?"
     elif path:
         hint = f"Параметры раздела {path}: {', '.join(names)}."
+    elif cls is not Config:
+        hint = f"Параметры: {', '.join(names)}."
     else:
         hint = f"Разделы конфига: {', '.join(names)}."
     return ConfigError(f"неизвестный параметр «{where}»", hint=hint)

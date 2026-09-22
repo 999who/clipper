@@ -279,17 +279,35 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
   стыках, `concat`. Звук и видео остаются синхронными (проверяет тест).
 
 ### 5. Субтитры (`subtitles.py`)
-- pysubs2 генерирует `.ass`, размер холста равен размеру выходного кадра.
-- На экране 1–3 слова (`subtitles.max_words`). Дополнительно ограничивается
-  число символов, текст переносится на паузах и концах предложений.
-- На каждое слово — отдельное событие: текущее слово жёлтое и появляется с
-  анимацией «pop» (увеличение через `\t`).
-- КАПС, без пунктуации. Дефис внутри слова сохраняется («КАК-ТО»).
-- Все параметры оформления — в `styles/capcut.yaml`: шрифт, размер, цвета в
-  формате `#RRGGBB`, обводка, тень, позиция, анимация. Шрифты лежат в `fonts/`,
-  и ffmpeg берёт их оттуда через `fontsdir` — ставить шрифт в систему не нужно.
-- В фильтре субтитров ffmpeg на Windows неудобно экранировать пути (`C\:/…`).
-  Поэтому ffmpeg запускается из папки с `.ass` и получает относительные пути.
+- pysubs2 генерирует `.ass` на каждый клип (`work/<id>/tmp/clip_NN.ass`); размер
+  холста (PlayRes) равен размеру выходного кадра. Время слов — после вырезок
+  этапа 4 (`Timeline.map_words`).
+- **Строки.** На экране 1–`max_words` слов (стиль, `subtitles.max_words`,
+  `--max-words`). Новая строка — после конца предложения (`.!?…:;`, отдельное
+  «—»), после паузы ≥ `pause` и когда строка длиннее `max_chars`. Строка держится
+  `hold` после последнего слова; промежуток между строками короче 0,25 с не
+  показывается пустым экраном.
+- **Подсветка.** На каждое слово — событие со всей строкой: текущее слово
+  цвета `highlight` и «выпрыгивает» (`\fscx/\fscy` + два `\t`: `pop_from` →
+  `pop_peak` → 100 % за `pop_duration`). Позиция — `\an5\pos(центр, position × высота)`.
+- **Текст.** КАПС без пунктуации, дефис внутри слова остаётся («КАК-ТО»).
+  Разбитые по дефису слова Whisper («Ха» «-ха») склеиваются и здесь — для
+  старых project.json.
+- **Ширина.** Ширина строки оценивается по ширине букв Montserrat Black
+  (1 em = 0,634 × размер шрифта в libass, замерено). Не влезает — `\fs`
+  уменьшается до 70 %; дальше переносит libass (поля `margin`).
+- **Стиль** — `styles/capcut.yaml`, значения совпадают с dataclass `Style`
+  (проверяет тест). Свой файл можно сократить до изменённых строк. Размеры — для
+  кадра 1080×1920, масштаб — `min(ширина/1080, высота/1920)`. Цвета — `"#RRGGBB"`.
+  Ошибки в стиле — `ConfigError` с подсказкой (неизвестный ключ, цвет без кавычек).
+- **Шрифты.** Montserrat Black + OFL.txt лежат в `clipper/fonts/`; вместе с
+  `font_file` стиля они копируются в `work/<id>/tmp/fonts/`, и ffmpeg получает
+  `fontsdir=fonts`. Системные шрифты libass тоже находит.
+- **Рендер.** `subtitles=filename=clip_NN.ass:fontsdir=fonts` — после склейки
+  кусков (или сразу после входа, если вырезок нет). ffmpeg запускается из
+  `work/<id>/tmp`, поэтому в фильтре только относительные пути — на Windows не
+  нужно экранировать `C:`. Нет libass (нет фильтра `subtitles`) — предупреждение,
+  клипы без субтитров. Нет слов в клипе — клип без субтитров.
 
 ### 6. Кадрирование и рендер (`reframe.py`, `facetrack.py`, `render.py`, `calibrate.py`)
 - **Режим `video`:**
@@ -334,7 +352,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | `clipper download SRC` | загрузка видео и heatmap, мини-график в терминале | 1 ✅ |
 | `clipper transcribe SRC` | распознавание (`--lang`, `--from`/`--to`) + `.srt` для проверки в плеере | 2 ✅ |
 | `clipper analyze SRC` | → `work/<id>/project.json` + таблица найденных клипов | 3 ✅ |
-| `clipper render` | → `output/<id>/clip_NN.mp4`; без `--project` берёт последний проект; `--clip 2,5` | 3 ✅ (дальше дополняется) |
+| `clipper render` | → `output/<id>/clip_NN.mp4`; без `--project` берёт последний проект; `--clip 2,5`; субтитры: `--style`, `--max-words`, `--no-subs` | 3–5 ✅ (дальше дополняется) |
 | `clipper run SRC` | analyze + render | 3 ✅ |
 | `clipper calibrate FILE` | кадр с сеткой для калибровки вебки | 6 |
 
@@ -400,7 +418,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | 2 ✅ | распознавание | `clipper transcribe URL --lang ru` → `.srt` в плеере |
 | 3 ✅ | выбор моментов, project.json, простая нарезка | `clipper analyze URL --clips 3 --min-len 15 --max-len 40` → `clipper render` |
 | 4 ✅ | паузы, слова-паразиты | `clipper render --cut-pauses --remove-fillers` |
-| 5 | субтитры | `clipper render` |
+| 5 ✅ | субтитры | `clipper render` |
 | 6 | кроп, лицо, stream, calibrate | `clipper render --crop face`; `clipper calibrate FILE` |
 | 7 | склейка, обложки, `--out` | `clipper render --concat --out D:\clips` |
 | потом | TUI на Textual | — |

@@ -2,7 +2,10 @@
 
 Клип вырезается из исходника в H.264 + AAC. Если включены audio.cut_pauses или
 audio.remove_fillers, из него вырезаются паузы и слова-паразиты (куски склеиваются
-через trim/concat). Субтитры и вертикальный кадр добавятся следующими этапами.
+через trim/concat). Поверх кадра накладываются субтитры (этап 5): .ass и
+шрифты лежат в work/<id>/tmp/, ffmpeg запускается из этой папки и получает
+относительные пути — на Windows так не нужно экранировать «C:» в фильтре.
+Вертикальный кадр добавится на этапе 6.
 
 Ошибка в одном клипе не останавливает остальные: она попадает в результат,
 а в конце интерфейс показывает сводку. Готовый файл сначала пишется во
@@ -18,10 +21,12 @@ from clipper.core.audio import ClipEdit, detect_silences, pause_hint, plan_edit,
 from clipper.core.config import Config
 from clipper.core.errors import ClipperError
 from clipper.core.events import Reporter
-from clipper.core.ffmpeg import encoder_works, list_encoders, run_ffmpeg
+from clipper.core.ffmpeg import encoder_works, list_encoders, list_filters, run_ffmpeg
 from clipper.core.models import Clip, Project
+from clipper.core.subtitles import Style, build_ass, font_files, load_style, prepare_fonts, write_ass
 
 LOG_FILENAME = "clipper.log"
+TMP_DIRNAME = "tmp"
 
 # Параметры кодирования: качество примерно одинаковое у обоих кодировщиков.
 VIDEO_ARGS = {
@@ -40,6 +45,14 @@ class RenderResult:
     duration: float = 0.0  # длина готового клипа
     removed: float = 0.0  # сколько секунд вырезано (паузы и паразиты)
     fillers: int = 0  # сколько слов-паразитов вырезано
+    subtitles: bool = False  # наложены ли субтитры
+
+
+@dataclass(frozen=True)
+class SubtitleSetup:
+    style: Style
+    folder: Path  # здесь .ass и fonts/; ffmpeg запускается отсюда
+    max_words: int | None
 
 
 def clip_filename(clip: Clip) -> str:
@@ -78,7 +91,7 @@ def render_project(
     only: set[int] | None = None,
 ) -> list[RenderResult]:
     """Отрендерить включённые клипы проекта (или только `only`) в output/<id>/."""
-    video = Path(project.source.video)
+    video = Path(project.source.video).resolve()
     if not video.is_file():
         raise ClipperError(
             f"Исходное видео не найдено: {video}",
@@ -100,6 +113,7 @@ def render_project(
     out = output_dir(cfg, project)
     out.mkdir(parents=True, exist_ok=True)
     reporter.info(f"Кодировщик: {'NVENC (видеокарта)' if encoder == 'nvenc' else 'libx264 (процессор)'}")
+    subs = subtitle_setup(cfg, ffmpeg.path, project, work_dir, reporter)
 
     results = []
     levels: dict[int, float] = {}  # клипы, где по громкости пауз не нашлось
@@ -111,13 +125,17 @@ def render_project(
             length = edit.timeline.duration
             if edit.quietest is not None:
                 levels[clip.id] = edit.quietest
+            ass = clip_subtitles(clip, edit, project, subs, length)
             with reporter.stage(f"clip_{clip.id}", title, total=length, unit="seconds") as stage:
                 render_clip(clip, edit, video, target, ffmpeg.path, encoder, reporter, stage.update, work_dir,
-                            has_audio=project.source.has_audio)  # fmt: skip
-                stage.result = target.name + _edit_note(edit)
+                            has_audio=project.source.has_audio, subtitles=ass)  # fmt: skip
+                stage.result = (
+                    target.name + _edit_note(edit) + (", без субтитров: нет слов" if subs and not ass else "")
+                )
             results.append(
-                RenderResult(clip.id, target, duration=length, removed=edit.timeline.removed, fillers=len(edit.fillers))
-            )
+                RenderResult(clip.id, target, duration=length, removed=edit.timeline.removed, fillers=len(edit.fillers),
+                             subtitles=ass is not None)
+            )  # fmt: skip
             if not edit.timeline.is_whole and length < cfg.select.min_len:
                 reporter.warning(
                     f"Клип {clip.id} после вырезок — {length:.0f} с, короче min_len ({cfg.select.min_len:g} с). "
@@ -128,6 +146,40 @@ def render_project(
     if levels:
         reporter.warning(pause_hint(levels, cfg.audio.silence_db))
     return results
+
+
+def subtitle_setup(
+    cfg: Config, ffmpeg: str, project: Project, work_dir: Path, reporter: Reporter
+) -> SubtitleSetup | None:
+    """Стиль и шрифты для субтитров; None — субтитры выключены или их не наложить."""
+    if not cfg.subtitles.enabled:
+        return None
+    style, style_path = load_style(cfg.subtitles.style)  # ошибка в стиле останавливает рендер
+    if "subtitles" not in list_filters(ffmpeg):
+        reporter.warning(
+            "В этой сборке ffmpeg нет libass — клипы будут без субтитров. "
+            "Поставьте сборку с libass: winget install --id Gyan.FFmpeg -e (или --no-subs, чтобы не видеть это)."
+        )
+        return None
+    if project.source.width <= 0 or project.source.height <= 0:
+        reporter.warning("Неизвестен размер кадра исходника — клипы будут без субтитров.")
+        return None
+    folder = Path(work_dir).resolve() / TMP_DIRNAME
+    prepare_fonts(folder / "fonts", font_files(style, style_path))
+    return SubtitleSetup(style, folder, cfg.subtitles.max_words)
+
+
+def clip_subtitles(
+    clip: Clip, edit: ClipEdit, project: Project, subs: SubtitleSetup | None, length: float
+) -> Path | None:
+    """Записать .ass клипа (время — после вырезок). None — субтитров не будет."""
+    if subs is None:
+        return None
+    words = edit.timeline.map_words(clip.words)
+    if not words:
+        return None
+    ass = build_ass(words, project.source.width, project.source.height, subs.style, length, subs.max_words)
+    return write_ass(subs.folder / f"clip_{clip.id:02d}.ass", ass)
 
 
 def clip_edit(clip: Clip, video: Path, ffmpeg: str, cfg: Config, has_audio: bool) -> ClipEdit:
@@ -163,29 +215,44 @@ def render_clip(
     work_dir: Path,
     *,
     has_audio: bool = True,
+    subtitles: Path | None = None,
 ) -> None:
-    """Вырезать клип из исходника (с вырезками по edit) и закодировать в H.264 + AAC."""
+    """Вырезать клип из исходника (с вырезками по edit), наложить субтитры и закодировать в H.264 + AAC.
+
+    `subtitles` — .ass; ffmpeg запускается из его папки, рядом должна лежать папка fonts/.
+    """
     tmp = target.with_name(target.stem + ".part.mp4")
+    post = f"subtitles=filename={subtitles.name}:fontsdir=fonts" if subtitles else None
     # -ss перед -i: быстрый переход к нужному месту; при перекодировании он точный до кадра.
     args = ["-ss", f"{clip.start:.3f}", "-t", f"{clip.duration:.3f}", "-i", str(video)]
-    if edit.timeline.is_whole:
-        args += ["-map", "0:v:0", "-map", "0:a:0?"]
-    else:
-        graph = cut_filter(edit.timeline.relative_pieces(), has_audio)
+    if not edit.timeline.is_whole:
+        graph = cut_filter(edit.timeline.relative_pieces(), has_audio, post=post)
         args += ["-filter_complex", graph, "-map", "[v]"] + (["-map", "[a]"] if has_audio else [])
+    elif post:
+        args += ["-filter_complex", f"[0:v:0]{post}[v]", "-map", "[v]", "-map", "0:a:0?"]
+    else:
+        args += ["-map", "0:v:0", "-map", "0:a:0?"]
     args += [*VIDEO_ARGS[encoder], "-pix_fmt", "yuv420p", *AUDIO_ARGS, "-movflags", "+faststart", str(tmp)]
     try:
-        run_ffmpeg(ffmpeg, args, on_progress=on_progress, cancel=reporter.cancel, log_path=work_dir / LOG_FILENAME)
+        run_ffmpeg(
+            ffmpeg,
+            args,
+            on_progress=on_progress,
+            cancel=reporter.cancel,
+            log_path=work_dir / LOG_FILENAME,
+            cwd=subtitles.parent if subtitles else None,
+        )
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
     os.replace(tmp, target)
 
 
-def cut_filter(pieces: list[tuple[float, float]], audio: bool) -> str:
+def cut_filter(pieces: list[tuple[float, float]], audio: bool, post: str | None = None) -> str:
     """filter_complex: оставить куски [a, b] (время от начала клипа) и склеить их.
 
-    На стыках звука — короткие фейды, иначе слышны щелчки.
+    На стыках звука — короткие фейды, иначе слышны щелчки. `post` — фильтры
+    видео после склейки (субтитры).
     """
     count = len(pieces)
     parts: list[str] = []
@@ -207,5 +274,8 @@ def cut_filter(pieces: list[tuple[float, float]], audio: bool) -> str:
                 f"afade=t=in:d={fade},afade=t=out:st={max(length - fade, 0):.3f}:d={fade}[a{i}]"
             )
             outputs.append(f"[a{i}]")
-    parts.append("".join(outputs) + f"concat=n={count}:v=1:a={1 if audio else 0}[v]" + ("[a]" if audio else ""))
+    video_out = "[vcat]" if post else "[v]"
+    parts.append("".join(outputs) + f"concat=n={count}:v=1:a={1 if audio else 0}{video_out}" + ("[a]" if audio else ""))
+    if post:
+        parts.append(f"[vcat]{post}[v]")
     return ";".join(parts)
