@@ -17,7 +17,7 @@
 |---|---|---|
 | 0 | каркас, конфиг, `clipper doctor`, `clipper config` | ✅ |
 | 1 | загрузка видео и heatmap, `clipper download` | ✅ |
-| 2 | распознавание речи (Whisper large-v3 на GPU) | |
+| 2 | распознавание речи (Whisper large-v3 на GPU), `clipper transcribe` | ✅ |
 | 3 | выбор моментов, `project.json`, нарезка | |
 | 4 | вырезание пауз и слов-паразитов | |
 | 5 | субтитры в стиле CapCut | |
@@ -117,6 +117,25 @@ clipper download "D:\Видео\стрим.mp4"
   `--set download.cookies_from_browser=firefox`. Из Chrome на Windows
   cookies прочитать нельзя.
 
+## Распознавание речи (этап 2)
+
+```
+clipper transcribe "https://www.youtube.com/watch?v=..." --lang ru
+clipper transcribe "D:\Видео\стрим.mp4" --from 10:00 --to 15:00
+```
+
+- Модель — faster-whisper `large-v3` на видеокарте. При первом запуске она
+  скачивается (~3 ГБ) в кэш HuggingFace (`transcribe.model_dir` — другая папка).
+- Звук извлекается один раз в `work/<id>/audio16k.wav`, результат копится в
+  `work/<id>/transcript.json` с таймкодами каждого слова. Уже распознанные
+  отрезки повторно не распознаются; `--force` — распознать заново.
+- `work/<id>/transcript.srt` — тот же текст субтитрами: откройте видео в VLC
+  или MPC-HC и перетащите файл в окно, чтобы проверить распознавание.
+- `--lang ru` — язык речи (по умолчанию определяется автоматически),
+  `--from`/`--to` — распознать только кусок (`90`, `1:30`, `1:02:03`).
+- Типичные «галлюцинации» Whisper на музыке и тишине («Субтитры сделал
+  DimaTorzok», «Продолжение следует…») отбрасываются.
+
 ## Проверка этапа 0
 
 ```
@@ -143,6 +162,8 @@ clipper config --set select.clipz=3
   pip install --force-reinstall nvidia-cublas-cu12 "nvidia-cudnn-cu12>=9,<10"
   ```
   clipper сам подключает их DLL из `site-packages\nvidia\…\bin`.
+- **Первый запуск распознавания долгий.** Модель large-v3 (~3 ГБ) скачивается
+  один раз и загружается в видеопамять; дальше запуск — секунды.
 - **Не хватает видеопамяти при распознавании.** Модели large-v3 нужно ~4,5 ГБ.
   Закройте игры на время распознавания или задайте
   `transcribe.compute_type: int8_float16` — это та же модель, но ей нужно ~3 ГБ.

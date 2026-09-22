@@ -62,6 +62,7 @@ class _Doctor:
             ("Распознавание речи", "Библиотеки CUDA", self.cuda_libraries),
             ("Распознавание речи", "Видеокарта", self.gpu),
             ("Распознавание речи", "CUDA в ctranslate2", self.ctranslate2_cuda),
+            ("Распознавание речи", "Модель large-v3", self.whisper_model),
             ("Кадр и субтитры", "mediapipe", self.mediapipe),
             ("Кадр и субтитры", "OpenCV", self.opencv),
             ("Кадр и субтитры", "pysubs2", self.pysubs2),
@@ -270,6 +271,20 @@ class _Doctor:
             self.add("ok", f"устройств CUDA: {count}, float16 поддерживается")
         else:
             self.add("warn", f"устройств CUDA: {count}, но float16 не поддерживается: {sorted(compute_types)}")
+
+    def whisper_model(self) -> None:
+        from clipper.core.transcribe import MODEL_NAME, model_is_downloaded
+
+        model_dir = None
+        try:
+            path = find_config_file(self.config_path)
+            model_dir = load_config(path).transcribe.model_dir if path else None
+        except ClipperError:
+            pass  # ошибку конфига покажет отдельная проверка
+        if model_is_downloaded(model_dir):
+            self.add("ok", f"{MODEL_NAME} скачана")
+        else:
+            self.add("info", f"{MODEL_NAME} скачается при первом распознавании (~3 ГБ, один раз)")
 
     # --- Кадр и субтитры ---
 

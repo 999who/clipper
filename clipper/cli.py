@@ -21,6 +21,7 @@ from clipper.console import (
     print_doctor,
     print_error,
     print_source,
+    print_transcript,
     setup_logging,
     setup_stdio,
 )
@@ -37,6 +38,8 @@ from clipper.core.doctor import run_doctor
 from clipper.core.download import prepare_source
 from clipper.core.errors import Cancelled, ClipperError
 from clipper.core.events import CancelToken, Reporter
+from clipper.core.models import format_time, parse_time
+from clipper.core.transcribe import transcribe_source
 
 app = typer.Typer(
     name="clipper",
@@ -185,6 +188,48 @@ def download(
         with ConsoleSink() as sink:
             source_info = prepare_source(source, cfg, Reporter(sink, token), force=force)
         print_source(source_info, Path(cfg.paths.workdir).resolve() / source_info.id)
+
+
+@app.command()
+def transcribe(
+    source: Annotated[str, typer.Argument(metavar="ССЫЛКА_ИЛИ_ФАЙЛ", help="Ссылка на видео YouTube или путь к файлу.")],
+    lang: Annotated[
+        Optional[str],
+        typer.Option(
+            "--lang", help="Язык речи: ru, en, … или auto (по умолчанию — автоопределение).", show_default=False
+        ),
+    ] = None,
+    start: Annotated[
+        Optional[str], typer.Option("--from", metavar="ВРЕМЯ", help="Распознать с этого места: 90, 1:30, 1:02:03.")
+    ] = None,
+    end: Annotated[Optional[str], typer.Option("--to", metavar="ВРЕМЯ", help="Распознать до этого места.")] = None,
+    force: Annotated[bool, typer.Option("--force", help="Распознать заново, не используя кэш.")] = False,
+    config: ConfigOption = None,
+    set_items: SetOption = None,
+    verbose: VerboseOption = False,
+) -> None:
+    """Распознать речь (Whisper large-v3 на видеокарте) → transcript.json и transcript.srt."""
+    with _command(verbose) as token:
+        cfg, _ = build_config(config, set_items, {"transcribe.language": lang})
+        with ConsoleSink() as sink:
+            reporter = Reporter(sink, token)
+            source_info = prepare_source(source, cfg, reporter)
+            first = _time_option("--from", start, 0.0)
+            last = min(_time_option("--to", end, source_info.duration), source_info.duration)
+            if last <= first:
+                raise ClipperError(f"--to ({format_time(last)}) должно быть позже --from ({format_time(first)}).")
+            work_dir = Path(cfg.paths.workdir).resolve() / source_info.id
+            result = transcribe_source(source_info, work_dir, cfg, reporter, [(first, last)], force=force)
+        print_transcript(result, work_dir, (first, last), source_info.duration)
+
+
+def _time_option(name: str, value: str | None, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return parse_time(value)
+    except ValueError as exc:
+        raise ClipperError(f"{name}: {exc}", hint="Примеры: 90, 1:30, 1:02:03.5") from None
 
 
 def main() -> None:

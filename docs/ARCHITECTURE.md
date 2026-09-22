@@ -198,8 +198,14 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
   следует…», «Субтитры сделал DimaTorzok» и подобных.
 - В режиме heatmap распознаются только окна ±`transcribe.margin` (5 с).
   Пересекающиеся окна объединяются, звук нарезается из одного `audio16k.wav`.
-- Результат кэшируется. Повторный analyze с другими ключевыми словами не
-  запускает Whisper.
+- Результат кэшируется в `transcript.json` вместе со списком распознанных отрезков
+  (`ranges`) и параметрами (`settings`). Новая просьба дораспознаёт только
+  недостающие куски; смена языка или версии параметров — распознаёт заново.
+  Повторный analyze с другими ключевыми словами не запускает Whisper.
+- Звук читается из `audio16k.wav` кусками (модуль `wave`), без загрузки всего
+  файла в память. Язык определяется на первом отрезке и дальше фиксируется.
+- Движок подменяемый (`engine_factory`): тесты проверяют логику на фальшивом
+  Whisper без GPU и без скачивания модели.
 - **Видеопамять 12 ГБ.** Модели в float16 нужно ~4,5 ГБ, так что запас большой.
   Для распознавания всего видео (режим keywords) можно включить пакетный режим
   faster-whisper — это заметно быстрее. Если видеопамять занята игрой, есть
@@ -294,7 +300,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 | `clipper doctor` | проверка окружения: Python, ffmpeg (libass, NVENC), yt-dlp + Deno, GPU/CUDA/cuBLAS/cuDNN, пакеты | 0 ✅ |
 | `clipper config [--init]` | итоговые параметры / создать `clipper.yaml` из примера | 0 ✅ |
 | `clipper download SRC` | загрузка видео и heatmap, мини-график в терминале | 1 ✅ |
-| `clipper transcribe SRC` | только распознавание + `.srt` для проверки в плеере (служебная) | 2 |
+| `clipper transcribe SRC` | распознавание (`--lang`, `--from`/`--to`) + `.srt` для проверки в плеере | 2 ✅ |
 | `clipper analyze SRC` | → `work/<id>/project.json` + таблица найденных клипов | 3 |
 | `clipper render` | → `output/<id>/clip_NN.mp4`; без `--project` берёт последний проект | 3–7 |
 | `clipper run SRC` | analyze + render | 3 |
@@ -359,7 +365,7 @@ render:   project.json → audio → timeline → subtitles → reframe → ffmp
 |---|---|---|
 | 0 ✅ | каркас, конфиг, `doctor` | `clipper doctor`, `clipper config` |
 | 1 ✅ | загрузка + heatmap | `clipper download URL` |
-| 2 | распознавание | `clipper transcribe URL --lang ru` → `.srt` в плеере |
+| 2 ✅ | распознавание | `clipper transcribe URL --lang ru` → `.srt` в плеере |
 | 3 | выбор моментов, project.json, простая нарезка | `clipper analyze URL --clips 3 --min-len 15 --max-len 40` → `clipper render` |
 | 4 | паузы, слова-паразиты | `clipper render --cut-pauses --remove-fillers` |
 | 5 | субтитры | `clipper render` |

@@ -31,8 +31,17 @@ from rich.text import Text
 
 from clipper.core.doctor import CheckResult
 from clipper.core.errors import ClipperError
+from clipper.core.text import plural
 from clipper.core.events import Event, Message, StageFinished, StageProgress, StageStarted
-from clipper.core.models import HeatPoint, SourceInfo, heatmap_peak, heatmap_profile
+from clipper.core.models import (
+    SRT_FILENAME,
+    TRANSCRIPT_FILENAME,
+    HeatPoint,
+    SourceInfo,
+    Transcript,
+    heatmap_peak,
+    heatmap_profile,
+)
 
 console = Console(highlight=False)
 
@@ -264,6 +273,42 @@ def heatmap_chart(points: list[HeatPoint], duration: float, width: int, height: 
     axis = left + " " * (gap // 2) + middle + " " * (gap - gap // 2) + right
     lines.append(Text(axis, style="dim"))
     return lines
+
+
+# --- transcribe -----------------------------------------------------------------------
+
+
+def print_transcript(
+    transcript: Transcript, work_dir: Path, requested: tuple[float, float], duration: float, preview: int = 6
+) -> None:
+    """Итог распознавания: язык, объём, файлы и первые фразы запрошенного отрезка."""
+    start, end = requested
+    whole = start <= 0.5 and end >= duration - 0.5
+    segments = [s for s in transcript.segments if s.end > start and s.start < end]
+    words = sum(len(s.words) for s in segments)
+    span = "всё видео" if whole else f"{_clock(start)}–{_clock(end)}"
+    rows = [
+        ("Язык", escape(transcript.language or "?")),
+        ("Отрезок", f"{span} ({_clock(end - start)})"),
+        ("Распознано", f"{plural(len(segments), 'фраза', 'фразы', 'фраз')}, {plural(words, 'слово', 'слова', 'слов')}"),
+        ("Кэш", escape(str(work_dir / TRANSCRIPT_FILENAME))),
+        ("Субтитры", escape(str(work_dir / SRT_FILENAME))),
+    ]
+    console.print()
+    for label, value in rows:
+        console.print(f"[bold]{label + ':':<12}[/]{value}")
+    if segments:
+        console.print()
+        for segment in segments[:preview]:
+            console.print(f"  [dim]{_clock(segment.start)}[/]  {escape(segment.text)}")
+        if len(segments) > preview:
+            console.print(f"  [dim]… и ещё {plural(len(segments) - preview, 'фраза', 'фразы', 'фраз')}[/]")
+    else:
+        console.print("\n[yellow]Речь не найдена[/] — на этом отрезке тишина или только музыка.")
+    console.print(
+        "\n[dim]Проверка: откройте видео в VLC или MPC-HC и перетащите в окно файл transcript.srt — "
+        "фразы должны совпадать с речью по времени.[/]"
+    )
 
 
 # --- Форматирование ------------------------------------------------------------------

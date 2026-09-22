@@ -5,14 +5,23 @@
 вместе с этапом нарезки.
 """
 
+import collections
 import json
+import logging
 import re
+import subprocess
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import cache
+from pathlib import Path
 from typing import Any
 
 from clipper.core.env import run_command
 from clipper.core.errors import ClipperError
+from clipper.core.events import CancelToken
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -150,3 +159,75 @@ def failure_reason(stderr: str, encoder: str, returncode: int) -> str:
     own = [line for line in lines if line.startswith(f"[{encoder} @")]
     reason = (own or lines or [f"код выхода {returncode}"])[0]
     return re.sub(r"^\[[^\]]*\]\s*", "", reason)
+
+
+def run_ffmpeg(
+    ffmpeg: str,
+    args: Sequence[str],
+    *,
+    on_progress: Callable[[float], None] | None = None,
+    cancel: CancelToken | None = None,
+    log_path: Path | None = None,
+    cwd: Path | None = None,
+) -> None:
+    """Запустить ffmpeg с прогрессом и отменой.
+
+    `on_progress(секунды)` получает позицию обработки из `-progress pipe:1`.
+    При отмене (или любом исключении из on_progress) процесс ffmpeg завершается.
+    Команда и вывод ошибок дописываются в `log_path` (work/<id>/clipper.log).
+    """
+    command = [ffmpeg, "-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-nostats", "-progress", "pipe:1"]
+    command += list(args)
+    log.debug("ffmpeg: %s", subprocess.list2cmdline(command))
+    tail: collections.deque[str] = collections.deque(maxlen=30)
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd,
+    )
+    # stderr читаем в отдельном потоке, иначе ffmpeg может встать на заполненном буфере.
+    reader = threading.Thread(target=lambda: tail.extend(process.stderr or []), daemon=True)
+    reader.start()
+    try:
+        for line in process.stdout or []:
+            key, _, value = line.strip().partition("=")
+            if key == "out_time_us" and value.isdigit() and on_progress is not None:
+                on_progress(int(value) / 1_000_000)
+            if cancel is not None:
+                cancel.check()
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        reader.join(timeout=5)
+    code = process.wait()
+    errors = [line.rstrip() for line in tail if line.strip()]
+    if log_path is not None:
+        _append_log(log_path, command, code, errors)
+    if code != 0:
+        # Последние строки ошибки без префиксов «[in#0 @ 0x…]», без повторов.
+        cleaned = list(dict.fromkeys(re.sub(r"^\[[^\]]*\]\s*", "", line) for line in errors[-4:]))
+        reason = " / ".join(cleaned) if cleaned else f"код выхода {code}"
+        raise ClipperError(f"ffmpeg завершился с ошибкой: {reason}", hint=_log_hint(log_path))
+
+
+def _append_log(log_path: Path, command: list[str], code: int, errors: list[str]) -> None:
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as file:
+            file.write(f"$ {subprocess.list2cmdline(command)}\n")
+            for line in errors:
+                file.write(f"  {line}\n")
+            file.write(f"  -> код выхода {code}\n\n")
+    except OSError:
+        log.debug("не удалось записать лог %s", log_path)
+
+
+def _log_hint(log_path: Path | None) -> str | None:
+    return f"Полная команда и вывод ffmpeg — в {log_path}" if log_path else None
