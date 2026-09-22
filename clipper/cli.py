@@ -20,6 +20,7 @@ from clipper.console import (
     print_config,
     print_doctor,
     print_analysis,
+    print_calibrate,
     print_error,
     print_render,
     print_source,
@@ -396,6 +397,47 @@ MaxWordsOption = Annotated[
                  rich_help_panel=PANEL_SUBS),
 ]  # fmt: skip
 
+PANEL_FRAME = "Кадр"
+
+FrameModeOption = Annotated[
+    Optional[str],
+    typer.Option("--mode", help="video — обычное видео; stream — вебка сверху, игра снизу (нужен --layout).",
+                 show_default=False, rich_help_panel=PANEL_FRAME),
+]  # fmt: skip
+AspectOption = Annotated[
+    Optional[str],
+    typer.Option("--aspect", help="9:16 (по умолчанию), 1:1 или original — вписать в 1080×1920 с фоном.",
+                 show_default=False, rich_help_panel=PANEL_FRAME),
+]  # fmt: skip
+CropOption = Annotated[
+    Optional[str],
+    typer.Option("--crop", help="face — следить за лицом (по умолчанию); center — по центру.", show_default=False,
+                 rich_help_panel=PANEL_FRAME),
+]  # fmt: skip
+BackgroundOption = Annotated[
+    Optional[str],
+    typer.Option("--background", help="Фон для 1:1 и original: blur (по умолчанию) или black.", show_default=False,
+                 rich_help_panel=PANEL_FRAME),
+]  # fmt: skip
+LayoutOption = Annotated[
+    Optional[str],
+    typer.Option("--layout", help="Пресет компоновки для --mode stream (раздел layouts в clipper.yaml).",
+                 show_default=False, rich_help_panel=PANEL_FRAME),
+]  # fmt: skip
+
+
+def _frame_flags(mode, aspect, crop, background, layout) -> dict[str, Any]:
+    flags = {
+        "reframe.mode": mode,
+        "reframe.aspect": aspect,
+        "reframe.crop": crop,
+        "reframe.background": background,
+        "reframe.layout": layout,
+    }
+    if layout and not mode:
+        flags["reframe.mode"] = "stream"  # --layout без --mode — очевидно стрим
+    return flags
+
 
 def _subs_flags(subs, style, max_words) -> dict[str, Any]:
     return {"subtitles.enabled": subs, "subtitles.style": style, "subtitles.max_words": max_words}
@@ -472,6 +514,11 @@ def render(
     subs: SubsOption = None,
     style: StyleOption = None,
     max_words: MaxWordsOption = None,
+    frame_mode: FrameModeOption = None,
+    aspect: AspectOption = None,
+    crop: CropOption = None,
+    background: BackgroundOption = None,
+    layout: LayoutOption = None,
     config: ConfigOption = None,
     set_items: SetOption = None,
     verbose: VerboseOption = False,
@@ -481,6 +528,7 @@ def render(
         flags = {"render.encoder": encoder, "paths.output": out}
         flags.update(_audio_flags(cut_pauses, pause_detect, silence_db, min_pause, fillers))
         flags.update(_subs_flags(subs, style, max_words))
+        flags.update(_frame_flags(frame_mode, aspect, crop, background, layout))
         cfg, _ = build_config(config, set_items, flags)
         with ConsoleSink() as sink:
             _, folder, results = pipeline.render(cfg, Reporter(sink, token), project, _clip_ids(clip))
@@ -510,6 +558,11 @@ def run(
     subs: SubsOption = None,
     style: StyleOption = None,
     max_words: MaxWordsOption = None,
+    frame_mode: FrameModeOption = None,
+    aspect: AspectOption = None,
+    crop: CropOption = None,
+    background: BackgroundOption = None,
+    layout: LayoutOption = None,
     config: ConfigOption = None,
     set_items: SetOption = None,
     verbose: VerboseOption = False,
@@ -521,6 +574,7 @@ def run(
         flags.update({"render.encoder": encoder, "paths.output": out})
         flags.update(_audio_flags(cut_pauses, pause_detect, silence_db, min_pause, fillers))
         flags.update(_subs_flags(subs, style, max_words))
+        flags.update(_frame_flags(frame_mode, aspect, crop, background, layout))
         cfg, _ = build_config(config, set_items, flags)
         with ConsoleSink() as sink:
             project, folder, results = pipeline.run(source, cfg, Reporter(sink, token), force=force)
@@ -528,6 +582,36 @@ def run(
         print_render(results, folder)
     if any(result.path is None for result in results):
         raise typer.Exit(1)
+
+
+@app.command()
+def calibrate(
+    source: Annotated[str, typer.Argument(metavar="ССЫЛКА_ИЛИ_ФАЙЛ", help="Видео стрима: ссылка или путь к файлу.")],
+    at: Annotated[
+        Optional[str],
+        typer.Option("--at", help="Момент кадра: 90, 1:30, 1:02:03 (по умолчанию 1:00).", show_default=False),
+    ] = None,
+    layout: Annotated[
+        Optional[str],
+        typer.Option(
+            "--layout",
+            help="Пресет из clipper.yaml: нарисовать рамку вебки и итоговый кадр 1080×1920.",
+            show_default=False,
+        ),
+    ] = None,  # fmt: skip
+    config: ConfigOption = None,
+    set_items: SetOption = None,
+    verbose: VerboseOption = False,
+) -> None:
+    """Кадр с координатной сеткой, чтобы снять координаты вебки для режима stream."""
+    from clipper.core.calibrate import calibrate as run_calibrate
+
+    with _command(verbose) as token:
+        cfg, _ = build_config(config, set_items, {"reframe.layout": layout})
+        moment = _time_option("--at", at, -1.0)
+        with ConsoleSink() as sink:
+            result = run_calibrate(source, cfg, Reporter(sink, token), at=None if moment < 0 else moment)
+        print_calibrate(result)
 
 
 def main() -> None:

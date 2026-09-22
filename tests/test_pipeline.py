@@ -164,7 +164,7 @@ def test_render_clips_after_hand_edit(setup):
     assert result.path == folder / "clip_01.mp4" and result.error is None
     media = probe(str(result.path), "ffprobe")
     assert media.duration == pytest.approx(4.0, abs=0.15)
-    assert (media.width, media.height, media.has_audio, media.video_codec) == (320, 240, True, "h264")
+    assert (media.width, media.height, media.has_audio, media.video_codec) == (1080, 1920, True, "h264")
     assert not list(folder.glob("*.part.mp4"))
 
 

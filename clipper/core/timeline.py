@@ -2,7 +2,7 @@
 
 Вырезание пауз и слов-паразитов превращает клип [start, end] в набор кусков
 исходника. `Timeline` переводит время исходного видео во время готового клипа —
-по нему сдвигаются субтитры (и позже траектория лица).
+по нему сдвигаются субтитры, а `to_source` — обратно — нужен траектории лица.
 """
 
 from dataclasses import dataclass
@@ -57,6 +57,15 @@ class Timeline:
                 return passed + (t - a)
             passed += b - a
         return passed
+
+    def to_source(self, t: float) -> float:
+        """Время готового клипа → время исходника (обратное к to_output)."""
+        passed = 0.0
+        for a, b in self.pieces:
+            if t <= passed + (b - a):
+                return a + max(t - passed, 0.0)
+            passed += b - a
+        return self.pieces[-1][1] if self.pieces else self.end
 
     def map_words(self, words: list[Word]) -> list[Word]:
         """Слова во времени готового клипа; вырезанные и лежащие за границами — отбрасываются."""

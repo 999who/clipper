@@ -1,11 +1,16 @@
 """Рендер клипов через ffmpeg.
 
-Клип вырезается из исходника в H.264 + AAC. Если включены audio.cut_pauses или
-audio.remove_fillers, из него вырезаются паузы и слова-паразиты (куски склеиваются
-через trim/concat). Поверх кадра накладываются субтитры (этап 5): .ass и
-шрифты лежат в work/<id>/tmp/, ffmpeg запускается из этой папки и получает
-относительные пути — на Windows так не нужно экранировать «C:» в фильтре.
-Вертикальный кадр добавится на этапе 6.
+Один запуск ffmpeg на клип, граф фильтров:
+
+    вход → [вырезки: trim/concat] → кадр 1080×1920 (reframe) → субтитры → H.264 + AAC
+
+- Вырезки пауз и паразитов (этап 4) — куски склеиваются через trim/concat.
+- Кадр (этап 6): окно 9:16/1:1 за лицом или по центру, фон для 1:1 и original,
+  режим stream — вебка сверху, игра снизу. Траектория окна — файл sendcmd.
+- Субтитры (этап 5) накладываются на готовый кадр 1080×1920.
+
+.ass, файл sendcmd и шрифты лежат в work/<id>/tmp/; ffmpeg запускается из этой
+папки и получает относительные пути — на Windows так не нужно экранировать «C:».
 
 Ошибка в одном клипе не останавливает остальные: она попадает в результат,
 а в конце интерфейс показывает сводку. Готовый файл сначала пишется во
@@ -15,8 +20,10 @@ audio.remove_fillers, из него вырезаются паузы и слов�
 import contextlib
 import os
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from clipper.core import env
 from clipper.core.audio import ClipEdit, detect_silences, pause_hint, plan_edit, quietest_level
@@ -25,6 +32,17 @@ from clipper.core.errors import ClipperError
 from clipper.core.events import Reporter
 from clipper.core.ffmpeg import encoder_works, list_encoders, list_filters, run_ffmpeg
 from clipper.core.models import Clip, Project
+from clipper.core.reframe import (
+    OUT_H,
+    OUT_W,
+    StreamPlan,
+    VideoPlan,
+    layout_for,
+    stream_graph,
+    stream_plan,
+    video_graph,
+    video_plan,
+)
 from clipper.core.subtitles import Style, build_ass, font_files, load_style, prepare_fonts, write_ass
 
 LOG_FILENAME = "clipper.log"
@@ -50,6 +68,7 @@ class RenderResult:
     removed: float = 0.0  # сколько секунд вырезано (паузы и паразиты)
     fillers: int = 0  # сколько слов-паразитов вырезано
     subtitles: bool = False  # наложены ли субтитры
+    frame: str = ""  # как поставлено окно: «лицо в 85 % кадров», «по центру»
 
 
 @dataclass(frozen=True)
@@ -57,6 +76,19 @@ class SubtitleSetup:
     style: Style
     folder: Path  # здесь .ass и fonts/; ffmpeg запускается отсюда
     max_words: int | None
+
+
+@dataclass
+class FrameSetup:
+    """Как строится кадр 1080×1920: план video или stream и детектор лиц (создаётся при первой нужде)."""
+
+    video: VideoPlan | None
+    stream: StreamPlan | None
+    detector_kind: str
+    folder: Path
+    detector: Any = None
+    detector_error: str | None = None
+    notes: dict[int, str] = field(default_factory=dict)
 
 
 def clip_filename(clip: Clip) -> str:
@@ -113,10 +145,12 @@ def render_project(
         raise ClipperError("Нечего рендерить: все клипы выключены (enabled: false).")
 
     ffmpeg = env.require_ffmpeg()
+    frame = frame_setup(cfg, project, work_dir)
     encoder = choose_encoder(cfg, ffmpeg.path, reporter)
     out = output_dir(cfg, project)
     out.mkdir(parents=True, exist_ok=True)
     reporter.info(f"Кодировщик: {'NVENC (видеокарта)' if encoder == 'nvenc' else 'libx264 (процессор)'}")
+    reporter.info(f"Кадр: {frame_description(cfg)}")
     subs = subtitle_setup(cfg, ffmpeg.path, project, work_dir, reporter)
 
     results = []
@@ -129,10 +163,12 @@ def render_project(
             length = edit.timeline.duration
             if edit.quietest is not None:
                 levels[clip.id] = edit.quietest
-            ass = clip_subtitles(clip, edit, project, subs, length)
+            commands = clip_commands(clip, edit, project, frame, video, ffmpeg.path, reporter, title)
+            ass = clip_subtitles(clip, edit, subs, length)
+            graph = frame_graph(frame, commands, ass)
             with reporter.stage(f"clip_{clip.id}", title, total=length, unit="seconds") as stage:
                 saved = render_clip(clip, edit, video, target, ffmpeg.path, encoder, reporter, stage.update, work_dir,
-                                    has_audio=project.source.has_audio, subtitles=ass)  # fmt: skip
+                                    has_audio=project.source.has_audio, graph=graph, cwd=frame.folder)  # fmt: skip
                 stage.result = saved.name + _edit_note(edit) + (", без субтитров: нет слов" if subs and not ass else "")
             if saved != target:
                 reporter.warning(
@@ -141,7 +177,7 @@ def render_project(
                 )
             results.append(
                 RenderResult(clip.id, saved, duration=length, removed=edit.timeline.removed, fillers=len(edit.fillers),
-                             subtitles=ass is not None)
+                             subtitles=ass is not None, frame=frame.notes.get(clip.id, ""))
             )  # fmt: skip
             if not edit.timeline.is_whole and length < cfg.select.min_len:
                 reporter.warning(
@@ -154,7 +190,100 @@ def render_project(
             results.append(RenderResult(clip.id, None, error=f"{exc.strerror or exc}: {exc.filename or target}"))
     if levels:
         reporter.warning(pause_hint(levels, cfg.audio.silence_db))
+    if frame.detector_error:
+        reporter.warning(f"Слежение за лицом не работает — кроп по центру. {frame.detector_error}")
     return results
+
+
+# --- кадр ------------------------------------------------------------------------------
+
+
+def frame_description(cfg: Config) -> str:
+    reframe = cfg.reframe
+    if reframe.mode == "stream":
+        return f"1080×1920, стрим — пресет {reframe.layout}"
+    parts = [f"1080×1920, {reframe.aspect}"]
+    if reframe.aspect != "original":
+        parts.append("за лицом" if reframe.crop == "face" else "по центру")
+    if reframe.aspect != "9:16":
+        parts.append("фон размытый" if reframe.background == "blur" else "фон чёрный")
+    return ", ".join(parts)
+
+
+def frame_setup(cfg: Config, project: Project, work_dir: Path) -> FrameSetup:
+    width, height = project.source.width, project.source.height
+    if width <= 0 or height <= 0:
+        raise ClipperError(
+            "Неизвестен размер кадра исходника — не из чего строить вертикальный кадр.",
+            hint="Скачайте или откройте видео заново: clipper download ССЫЛКА_ИЛИ_ФАЙЛ --force",
+        )
+    folder = Path(work_dir).resolve() / TMP_DIRNAME
+    folder.mkdir(parents=True, exist_ok=True)
+    if cfg.reframe.mode == "stream":
+        _, layout = layout_for(cfg)
+        return FrameSetup(None, stream_plan(layout, width, height), cfg.reframe.detector, folder)
+    return FrameSetup(video_plan(cfg, width, height), None, cfg.reframe.detector, folder)
+
+
+def clip_commands(
+    clip: Clip,
+    edit: ClipEdit,
+    project: Project,
+    frame: FrameSetup,
+    video: Path,
+    ffmpeg: str,
+    reporter: Reporter,
+    title: str,
+) -> Path | None:
+    """Найти лицо в клипе и записать траекторию окна (файл sendcmd). None — окно по центру."""
+    from clipper.core import facetrack
+
+    plan = frame.video
+    if plan is None or not plan.track or frame.detector_error:
+        return None
+    cache = frame.folder / f"faces_{clip.id:02d}.json"
+    key = facetrack.cache_key(video, clip.start, clip.end, frame.detector_kind)
+    samples = facetrack.load_samples(cache, key)
+    if samples is None:
+        if frame.detector is None:
+            try:
+                frame.detector = facetrack.make_detector(frame.detector_kind)
+            except ClipperError as exc:
+                frame.detector_error = exc.message + (f" {exc.hint}" if exc.hint else "")
+                return None
+        with reporter.stage(f"face_{clip.id}", f"{title}: поиск лица", total=clip.duration, unit="seconds") as stage:
+            samples = facetrack.analyze_faces(
+                ffmpeg, video, clip.start, clip.end, plan.src_w, plan.src_h, frame.detector,
+                on_progress=stage.update, cancel=reporter.cancel,
+            )  # fmt: skip
+            stage.result = f"кадров: {len(samples)}"
+        facetrack.save_samples(cache, key, samples)
+    path, coverage = facetrack.camera_path(samples, plan)
+    if coverage < facetrack.MIN_COVERAGE:
+        frame.notes[clip.id] = "лицо не найдено — по центру"
+        return None
+    frame.notes[clip.id] = f"лицо в {coverage:.0%} кадров"
+    commands = frame.folder / f"clip_{clip.id:02d}.cmd"
+    text = facetrack.crop_commands(samples, path, plan, edit.timeline, project.source.fps)
+    commands.write_text(text, encoding="utf-8")
+    return commands
+
+
+def frame_graph(frame: FrameSetup, commands: Path | None, ass: Path | None) -> Callable[[str], str]:
+    """Фрагмент графа: вход (метка) → кадр 1080×1920 → субтитры → [v]."""
+
+    def build(inp: str) -> str:
+        framed = "[framed]" if ass else "[v]"
+        if frame.stream is not None:
+            graph = stream_graph(frame.stream, inp, framed)
+        else:
+            assert frame.video is not None
+            graph = video_graph(frame.video, inp, framed, commands.name if commands else None)
+        if ass:
+            graph += f";[framed]subtitles=filename={ass.name}:fontsdir=fonts[v]"
+        return graph
+
+    return build
 
 
 def subtitle_setup(
@@ -170,24 +299,19 @@ def subtitle_setup(
             "Поставьте сборку с libass: winget install --id Gyan.FFmpeg -e (или --no-subs, чтобы не видеть это)."
         )
         return None
-    if project.source.width <= 0 or project.source.height <= 0:
-        reporter.warning("Неизвестен размер кадра исходника — клипы будут без субтитров.")
-        return None
     folder = Path(work_dir).resolve() / TMP_DIRNAME
     prepare_fonts(folder / "fonts", font_files(style, style_path))
     return SubtitleSetup(style, folder, cfg.subtitles.max_words)
 
 
-def clip_subtitles(
-    clip: Clip, edit: ClipEdit, project: Project, subs: SubtitleSetup | None, length: float
-) -> Path | None:
+def clip_subtitles(clip: Clip, edit: ClipEdit, subs: SubtitleSetup | None, length: float) -> Path | None:
     """Записать .ass клипа (время — после вырезок). None — субтитров не будет."""
     if subs is None:
         return None
     words = edit.timeline.map_words(clip.words)
     if not words:
         return None
-    ass = build_ass(words, project.source.width, project.source.height, subs.style, length, subs.max_words)
+    ass = build_ass(words, OUT_W, OUT_H, subs.style, length, subs.max_words)
     return write_ass(subs.folder / f"clip_{clip.id:02d}.ass", ass)
 
 
@@ -224,24 +348,23 @@ def render_clip(
     work_dir: Path,
     *,
     has_audio: bool = True,
-    subtitles: Path | None = None,
+    graph: Callable[[str], str],
+    cwd: Path,
 ) -> Path:
-    """Вырезать клип из исходника (с вырезками по edit), наложить субтитры и закодировать в H.264 + AAC.
+    """Вырезать клип из исходника (с вырезками по edit), построить кадр и закодировать в H.264 + AAC.
 
-    `subtitles` — .ass; ffmpeg запускается из его папки, рядом должна лежать папка fonts/.
+    `graph(вход)` — фрагмент filter_complex от метки входа до [v] (кадр и субтитры).
+    ffmpeg запускается из `cwd`: файлы .ass/.cmd в графе — относительные.
     Возвращает путь готового файла (см. publish).
     """
     tmp = target.with_name(target.stem + ".part.mp4")
-    post = f"subtitles=filename={subtitles.name}:fontsdir=fonts" if subtitles else None
     # -ss перед -i: быстрый переход к нужному месту; при перекодировании он точный до кадра.
     args = ["-ss", f"{clip.start:.3f}", "-t", f"{clip.duration:.3f}", "-i", str(video)]
     if not edit.timeline.is_whole:
-        graph = cut_filter(edit.timeline.relative_pieces(), has_audio, post=post)
-        args += ["-filter_complex", graph, "-map", "[v]"] + (["-map", "[a]"] if has_audio else [])
-    elif post:
-        args += ["-filter_complex", f"[0:v:0]{post}[v]", "-map", "[v]", "-map", "0:a:0?"]
+        full = cut_filter(edit.timeline.relative_pieces(), has_audio, post=graph("[vcat]"))
+        args += ["-filter_complex", full, "-map", "[v]"] + (["-map", "[a]"] if has_audio else [])
     else:
-        args += ["-map", "0:v:0", "-map", "0:a:0?"]
+        args += ["-filter_complex", graph("[0:v:0]"), "-map", "[v]", "-map", "0:a:0?"]
     args += [*VIDEO_ARGS[encoder], "-pix_fmt", "yuv420p", *AUDIO_ARGS, "-movflags", "+faststart", str(tmp)]
     try:
         run_ffmpeg(
@@ -250,7 +373,7 @@ def render_clip(
             on_progress=on_progress,
             cancel=reporter.cancel,
             log_path=work_dir / LOG_FILENAME,
-            cwd=subtitles.parent if subtitles else None,
+            cwd=cwd,
         )
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -289,8 +412,8 @@ def publish(tmp: Path, target: Path) -> Path:
 def cut_filter(pieces: list[tuple[float, float]], audio: bool, post: str | None = None) -> str:
     """filter_complex: оставить куски [a, b] (время от начала клипа) и склеить их.
 
-    На стыках звука — короткие фейды, иначе слышны щелчки. `post` — фильтры
-    видео после склейки (субтитры).
+    На стыках звука — короткие фейды, иначе слышны щелчки. `post` — фрагмент
+    графа от метки [vcat] (склеенное видео) до [v].
     """
     count = len(pieces)
     parts: list[str] = []
@@ -315,5 +438,5 @@ def cut_filter(pieces: list[tuple[float, float]], audio: bool, post: str | None 
     video_out = "[vcat]" if post else "[v]"
     parts.append("".join(outputs) + f"concat=n={count}:v=1:a={1 if audio else 0}{video_out}" + ("[a]" if audio else ""))
     if post:
-        parts.append(f"[vcat]{post}[v]")
+        parts.append(post)
     return ";".join(parts)

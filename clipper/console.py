@@ -343,12 +343,43 @@ def print_analysis(project: Project, path: Path, next_step: bool = True) -> None
         )
 
 
+def print_calibrate(result: Any) -> None:
+    """Итог clipper calibrate: где картинки и что вписать в clipper.yaml."""
+    source = result.source
+    console.print(
+        f"Кадр {source.width}×{source.height} на {_clock(result.at)} с сеткой: [bold]{escape(str(result.frame))}[/]"
+    )
+    console.print("[dim]Тонкие линии — через 50 px, подписанные — через 100 px.[/]")
+    if result.preview is not None:
+        cam = result.plan.webcam
+        console.print(
+            f"Итоговый кадр 1080×1920 по пресету «{escape(result.layout)}»: [bold]{escape(str(result.preview))}[/]"
+        )
+        console.print(f"Вебка: x={cam.x} y={cam.y} {cam.w}×{cam.h} (зелёная рамка), окно игры — голубая рамка.")
+        return
+    console.print()
+    console.print("Найдите на кадре вебку и впишите её координаты в clipper.yaml:")
+    snippet = (
+        "layouts:\n"
+        "  my_setup:\n"
+        f"    source_size: [{source.width}, {source.height}]\n"
+        "    webcam: { x: 1560, y: 810, width: 360, height: 270 }   # левый верхний угол, ширина, высота\n"
+        "    webcam_zone: 0.33\n"
+        "    game_crop: center\n"
+    )
+    console.print(Syntax(snippet, "yaml", theme="ansi_dark", background_color="default"))
+    console.print(f'Проверка: clipper calibrate "{escape(source.input)}" --layout my_setup')
+
+
 def print_render(results: list[RenderResult], folder: Path) -> None:
     """Итог рендера: какие клипы готовы, какие — нет и почему."""
     table = Table(show_header=True, header_style="bold")
     table.add_column("id", justify="right")
     table.add_column("Файл")
     table.add_column("Длина", justify="right")
+    frames = any(r.frame for r in results)
+    if frames:
+        table.add_column("Кадр")
     cuts = any(r.removed > 0.05 for r in results)
     if cuts:
         table.add_column("Вырезано", justify="right")
@@ -356,13 +387,20 @@ def print_render(results: list[RenderResult], folder: Path) -> None:
     for result in results:
         if result.path is not None:
             row = [str(result.clip_id), escape(result.path.name), f"{result.duration:.0f} с"]
+            if frames:
+                row.append(escape(result.frame) or "—")
             if cuts:
                 fillers = f", паразиты: {result.fillers}" if result.fillers else ""
                 row.append(f"{result.removed:.1f} с{fillers}" if result.removed > 0.05 else "—")
             table.add_row(*row, "[green]готово[/]")
         else:
             table.add_row(
-                str(result.clip_id), "—", "—", *(["—"] if cuts else []), f"[red]ошибка:[/] {escape(result.error or '')}"
+                str(result.clip_id),
+                "—",
+                "—",
+                *(["—"] if frames else []),
+                *(["—"] if cuts else []),
+                f"[red]ошибка:[/] {escape(result.error or '')}",
             )
     console.print()
     console.print(table)

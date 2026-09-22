@@ -180,7 +180,7 @@ def black_video(path: Path, seconds: int = 6, size: str = "540x960") -> Path:
     return path
 
 
-def frame_colors(video: Path, at: float, size: tuple[int, int] = (540, 960)) -> tuple[int, int]:
+def frame_colors(video: Path, at: float, size: tuple[int, int] = (1080, 1920)) -> tuple[int, int]:
     """(белых, жёлтых) пикселей в кадре на `at` секунде."""
     np = pytest.importorskip("numpy")
     raw = subprocess.run(

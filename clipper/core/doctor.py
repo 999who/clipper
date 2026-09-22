@@ -65,6 +65,7 @@ class _Doctor:
             ("Распознавание речи", "Модель large-v3", self.whisper_model),
             ("Кадр и субтитры", "mediapipe", self.mediapipe),
             ("Кадр и субтитры", "OpenCV", self.opencv),
+            ("Кадр и субтитры", "Детектор лиц", self.face_detector),
             ("Кадр и субтитры", "pysubs2", self.pysubs2),
             ("Конфиг", "Файл конфига", self.config),
         ]
@@ -315,6 +316,17 @@ class _Doctor:
             )
         else:
             self.add("ok", detail)
+
+    def face_detector(self) -> None:
+        from clipper.core.errors import ClipperError
+        from clipper.core.facetrack import make_detector
+
+        try:
+            make_detector("yunet")
+        except ClipperError as exc:
+            self.add("fail", exc.message, exc.hint or "Без него --crop face работает как --crop center.")
+            return
+        self.add("ok", "YuNet (OpenCV) загружается")
 
     def pysubs2(self) -> None:
         version = _dist_version("pysubs2")

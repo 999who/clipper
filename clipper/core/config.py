@@ -92,6 +92,7 @@ class ReframeConfig:
     crop: Literal["face", "center"] = "face"
     background: Literal["blur", "black"] = "blur"  # фон для 1:1 и original
     layout: str | None = None  # пресет из layouts для режима stream
+    detector: Literal["yunet", "mediapipe"] = "yunet"  # детектор лиц для crop: face
 
 
 @dataclass

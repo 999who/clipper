@@ -60,6 +60,8 @@
 #   crop: face               # face — следить за лицом; center — кроп по центру
 #   background: blur         # фон для 1:1 и original: blur — размытое видео, black — чёрный
 #   layout: null             # пресет из layouts для режима stream (или флаг --layout)
+#   detector: yunet          # детектор лиц для crop: face — yunet (OpenCV, находит и небольшие лица)
+#                            # или mediapipe (BlazeFace: только крупные лица, как в селфи)
 
 # Этапы 6–7 — рендер.
 # render:
@@ -69,7 +71,7 @@
 
 # Пресеты компоновки для режима stream: --mode stream --layout my_setup
 # Координаты вебки — в пикселях исходного кадра. Снять их удобно по кадру
-# с сеткой: clipper calibrate ВИДЕО (появится на этапе 6).
+# с сеткой: clipper calibrate ВИДЕО --at 1:30.
 layouts:
   my_setup:
     source_size: [1920, 1080]   # разрешение кадра, по которому сняты координаты
