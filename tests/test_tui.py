@@ -431,3 +431,21 @@ def test_stream_preset_created_in_tui(tmp_path, monkeypatch):
 
     saved = load_config(tmp_path / "clipper.yaml").layouts["cam"]
     assert saved.webcam.x == 700 and saved.source_size == (1280, 720)
+
+
+def test_typing_keywords_switches_search_mode(tmp_path):
+    async def scenario():
+        app = ClipperApp(make_store(tmp_path))
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")  # «Новое видео»
+            assert app.store.value("select.mode") == "heatmap"
+            await pilot.press("down", "down", "down", "enter")  # «Ключевые слова»
+            assert isinstance(app.screen, InputModal)
+            await pilot.press(*"Свадьба", "enter")
+            await pilot.pause()
+            assert app.store.value("select.mode") == "keywords"
+            assert "по ключевым словам" in str(app.screen.query_one("#settings").get_option("set:select.mode").prompt)
+            assert "--mode-select keywords" in str(app.screen.query_one("#command").render())
+
+    run(scenario())

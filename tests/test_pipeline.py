@@ -127,6 +127,20 @@ def test_analyze_without_heatmap_suggests_keywords(setup, monkeypatch):
 
 
 @needs_ffmpeg
+def test_analyze_without_heatmap_falls_back_to_keywords(setup, monkeypatch):
+    cfg, source, _ = setup
+    source.heatmap = None
+    monkeypatch.setattr(tr, "load_whisper", lambda cfg, reporter: Speaker({50.0: "свадьба!"}))
+    cfg.select.keywords = ["свадьба"]  # режим остался heatmap, но слова вписаны
+    events = []
+    project, _ = pipeline.analyze("https://youtu.be/vid", cfg, Reporter(events.append))
+    assert project.mode == "keywords"
+    (clip,) = project.clips
+    assert clip.start < 50 < clip.end
+    assert any("нет heatmap" in getattr(e, "text", "") and "свадьба" in getattr(e, "text", "") for e in events)
+
+
+@needs_ffmpeg
 def test_analyze_by_keywords_and_backup(setup, monkeypatch):
     cfg, source, _ = setup
     monkeypatch.setattr(tr, "load_whisper", lambda cfg, reporter: Speaker({50.0: "победа!"}))

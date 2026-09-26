@@ -160,6 +160,15 @@ class AnalyzeScreen(Screen[Any]):
 
     @on(SettingsList.Changed)
     def _changed(self, event: SettingsList.Changed) -> None:
+        store = self.app.store
+        if (
+            event.key == "select.keywords"
+            and store.value("select.keywords")
+            and store.value("select.mode") != "keywords"
+        ):
+            store.try_set("select.mode", "keywords")  # вписали слова — значит, искать по ним
+            self.query_one("#settings", SettingsList).refresh_values()
+            self.app.notify("«Как искать моменты» → «по ключевым словам».")
         self._command()
 
     @on(SettingsList.Help)

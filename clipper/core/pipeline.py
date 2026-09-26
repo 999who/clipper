@@ -56,18 +56,29 @@ def analyze(
     work_dir = work_dir_for(cfg, source.id)
     select = cfg.select
 
-    if select.mode == "heatmap":
-        if not source.heatmap:
+    mode = select.mode
+    if mode == "heatmap" and not source.heatmap:
+        if not select.keywords:
             raise ClipperError(
                 "У этого видео нет heatmap («Самые популярные фрагменты») — выбрать моменты по нему нельзя.",
-                hint=f'Выберите моменты по ключевым словам: clipper analyze "{source_input}" '
+                hint="Ищите по ключевым словам. В интерфейсе: «Как искать моменты» → «по ключевым словам» и "
+                f'впишите слова. В командной строке: clipper analyze "{source_input}" '
                 '--mode-select keywords --keywords "слово1,слово2"',
             )
+        reporter.warning(
+            "У этого видео нет heatmap («Самые популярные фрагменты») — ищу по ключевым словам: "
+            + ", ".join(select.keywords)
+        )
+        mode = "keywords"
+
+    if mode == "heatmap":
+        assert source.heatmap is not None
         candidates = heatmap_candidates(source.heatmap, source.duration, select.clips, select.min_len, select.max_len)
         if not candidates:
             raise ClipperError(
                 "На графике heatmap нет выраженных пиков.",
-                hint='Попробуйте режим ключевых слов: --mode-select keywords --keywords "…"',
+                hint="Попробуйте поиск по ключевым словам: в интерфейсе — «Как искать моменты» → «по ключевым "
+                'словам», в командной строке — --mode-select keywords --keywords "…"',
             )
         margin = cfg.transcribe.margin
         ranges = [(c.start - margin, c.end + margin) for c in candidates]
@@ -102,14 +113,14 @@ def analyze(
             f"Нашлось клипов: {len(clips)} из запрошенных {select.clips}"
             + (
                 " — видео слишком короткое для такого числа клипов."
-                if select.mode == "heatmap"
+                if mode == "heatmap"
                 else " — ключевые слова звучат реже. Добавьте слова или уменьшите длину клипа."
             )
         )
 
     project = Project(
         source=_without_heatmap(source),
-        mode=select.mode,
+        mode=mode,
         keywords=list(select.keywords),
         language=transcript.language,
         created=datetime.now().isoformat(timespec="seconds"),
