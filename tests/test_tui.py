@@ -369,3 +369,65 @@ def test_project_remembers_output_folder(tmp_path, monkeypatch):
     assert pipeline.open_project(project_path).output == str(folder.resolve())
     _, again, _ = pipeline.render(cfg, Reporter(), str(project_path))  # без --out — папка проекта
     assert again == folder.resolve() / "vid"
+
+
+def test_stream_preset_created_in_tui(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from clipper.core import calibrate as calibrate_module
+    from clipper.tui import stream
+    from clipper.tui.stream import PresetScreen, PresetsScreen
+
+    opened, calls = [], []
+
+    def fake_calibrate(source, cfg, reporter, at=None, *, layout=None, name=None):
+        calls.append((source, at, layout, name))
+        frame = tmp_path / "calibrate.png"
+        preview = tmp_path / f"calibrate_{name}.png" if layout else None
+        return SimpleNamespace(source=SimpleNamespace(width=1280, height=720), frame=frame, preview=preview)
+
+    monkeypatch.setattr(calibrate_module, "calibrate", fake_calibrate)
+    monkeypatch.setattr(stream, "open_path", opened.append)
+    make_project(tmp_path)  # «видео для примера» подставится из последнего проекта
+
+    async def scenario():
+        app = ClipperApp(make_store(tmp_path))
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            app.push_screen(PresetsScreen())
+            await pilot.pause()
+            await pilot.press("enter")  # «＋ Новый пресет»
+            assert isinstance(app.screen, PresetScreen)
+            editor = app.screen
+            assert editor.source == "v.mp4"
+
+            editor.query_one("#preset").highlighted = 0
+            await pilot.press("enter", *"cam", "enter")  # название
+            await pilot.press("end", "up", "up", "up", "enter")  # «▶ Кадр с сеткой»
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert editor.preset.source_size == (1280, 720) and opened == [tmp_path / "calibrate.png"]
+
+            # Вебка 1440×0 480×270 не влезает в 1280×720 — превью не запускается, пока не поправить.
+            await pilot.press("down", "enter")  # «▶ Превью клипа»
+            await pilot.pause()
+            assert len(calls) == 1
+            editor._set_webcam("x", 700)
+            editor._set_webcam("y", 20)
+            editor._refresh()
+            await pilot.press("end", "up", "up", "enter")  # «▶ Превью клипа»
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert calls[-1][2].webcam == stream.Rect(700, 20, 480, 270) and calls[-1][3] == "cam"
+            assert opened[-1] == tmp_path / "calibrate_cam.png"
+
+            await pilot.press("end", "up", "enter")  # «✓ Сохранить…»
+            await pilot.pause()
+            assert isinstance(app.screen, PresetsScreen)
+            assert app.store.value("reframe.mode") == "stream" and app.store.value("reframe.layout") == "cam"
+
+    run(scenario())
+    from clipper.core.config import load_config
+
+    saved = load_config(tmp_path / "clipper.yaml").layouts["cam"]
+    assert saved.webcam.x == 700 and saved.source_size == (1280, 720)

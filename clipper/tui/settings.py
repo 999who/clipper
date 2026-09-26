@@ -203,9 +203,17 @@ class SettingsStore:
 
     def __init__(self, config_path: Path | None, overrides: dict[str, Any] | None = None) -> None:
         self.path = config_path
-        self.overrides: dict[str, Any] = dict(overrides or {})
+        self.initial: dict[str, Any] = dict(overrides or {})  # --set при запуске
+        self.overrides: dict[str, Any] = dict(self.initial)
         self.base = build_config(config_path, self.overrides)  # для «то же в командной строке»
         self._config = self.base
+
+    def reload(self, config_path: Path | None = None) -> None:
+        """Перечитать clipper.yaml (например, после сохранения пресета)."""
+        if config_path is not None:
+            self.path = config_path
+        self.base = build_config(self.path, self.initial)
+        self._config = build_config(self.path, self.overrides)
 
     def config(self) -> Config:
         return self._config

@@ -39,29 +39,31 @@
 
 ## Запуск
 
-Каждый раз перед работой откройте терминал в папке проекта и активируйте
-окружение:
+Дважды щёлкните `clipper.bat` в папке проекта или запустите его из терминала:
 ```
-cd clipper
-.venv\Scripts\activate
+cd C:\clipper\clipper
+.\clipper
 ```
-
-Затем запустите:
-```
-clipper
-```
+Активировать окружение для этого не нужно.
 
 Откроется интерфейс в терминале. Всё выбирается стрелками и Enter, Esc —
 назад, q — выход. Лучше всего он выглядит в Windows Terminal.
 
+Там же настраивается режим стримера (вебка сверху, игра снизу): главное меню →
+«Режим стримера».
+
+Если окружение активировано (`.venv\Scripts\activate`), можно запускать просто
+`clipper`.
+
 ## Обновление
 
+В папке проекта:
 ```
 git pull
-pip install -r requirements.txt
+.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
 Если перестало скачиваться видео с YouTube, обновите yt-dlp:
 ```
-pip install -U "yt-dlp[default,deno]"
+.venv\Scripts\python -m pip install -U "yt-dlp[default,deno]"
 ```

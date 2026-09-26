@@ -65,7 +65,12 @@ class HomeScreen(Screen[Any]):
             last = self.projects[0]
             options.append(Option(f"Продолжить: {last.title} — клипов {last.enabled} из {last.clips}", id="last"))
             options.append(Option(f"Все проекты ({len(self.projects)})", id="projects"))
-        options += [None, Option("Проверка окружения", id="doctor"), Option("Выход", id="quit")]
+        options += [
+            Option("Режим стримера: вебка сверху, игра снизу", id="stream"),
+            None,
+            Option("Проверка окружения", id="doctor"),
+            Option("Выход", id="quit"),
+        ]
         menu = self.query_one("#menu", OptionList)
         menu.set_options(options)
         menu.highlighted = 0
@@ -82,6 +87,10 @@ class HomeScreen(Screen[Any]):
             self.app.push_screen(ProjectScreen(self.projects[0].path))
         elif choice == "projects":
             self.app.push_screen(ProjectsScreen())
+        elif choice == "stream":
+            from clipper.tui.stream import PresetsScreen
+
+            self.app.push_screen(PresetsScreen())
         elif choice == "doctor":
             self.app.push_screen(DoctorScreen())
         elif choice == "quit":

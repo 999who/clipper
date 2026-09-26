@@ -11,14 +11,14 @@ Screen {
     padding: 1 2;
 }
 
-#menu, #projects {
+#menu, #projects, #presets {
     margin: 0 2;
     height: auto;
     max-height: 1fr;
     border: round $primary;
 }
 
-#settings {
+#settings, #preset {
     margin: 1 2 0 2;
     height: 1fr;
     border: round $primary;

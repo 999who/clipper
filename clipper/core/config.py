@@ -255,6 +255,76 @@ def write_example_config(dest: Path, overwrite: bool = False) -> Path:
     return dest
 
 
+def layout_yaml(name: str, layout: "LayoutConfig", indent: str = "  ") -> str:
+    """Пресет в YAML для раздела layouts (с отступом раздела)."""
+    key = name if re.fullmatch(r"[\w-]+", name) else '"' + name.replace('"', '\\"') + '"'
+    cam, inner = layout.webcam, indent * 2
+    lines = [f"{indent}{key}:"]
+    if layout.source_size is not None:
+        lines.append(f"{inner}source_size: [{layout.source_size[0]}, {layout.source_size[1]}]")
+    lines += [
+        f"{inner}webcam: {{ x: {cam.x}, y: {cam.y}, width: {cam.width}, height: {cam.height} }}",
+        f"{inner}webcam_zone: {layout.webcam_zone:g}",
+        f"{inner}game_crop: {layout.game_crop}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def save_layout(path: Path, name: str, layout: "LayoutConfig") -> Path:
+    """Записать пресет в раздел layouts файла конфига, не трогая остальное (и комментарии).
+
+    Файла нет — он создаётся из примера. Пресет с таким именем заменяется, иначе
+    дописывается в конец раздела. После записи файл проверяется; если он не
+    читается, возвращается прежний текст.
+    """
+    if not path.exists():
+        write_example_config(path)
+    original = path.read_text(encoding="utf-8-sig")
+    lines = original.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+
+    top = next((i for i, line in enumerate(lines) if re.match(r"^layouts\s*:", line)), None)
+    if top is None:
+        text = "".join(lines).rstrip("\n") + "\n\nlayouts:\n" + layout_yaml(name, layout)
+    else:
+        if re.match(r"^layouts\s*:\s*\{\s*\}", lines[top]):  # layouts: {}
+            lines[top] = "layouts:\n"
+        end = next(
+            (i for i in range(top + 1, len(lines)) if lines[i].strip() and not lines[i][0].isspace()
+             and not lines[i].startswith("#")),
+            len(lines),
+        )  # fmt: skip
+        children = [i for i in range(top + 1, end) if lines[i].strip() and not lines[i].lstrip().startswith("#")]
+        indent = re.match(r"^\s*", lines[children[0]]).group(0) if children else "  "  # type: ignore[union-attr]
+        key = re.compile(rf"^{indent}[\"']?{re.escape(name)}[\"']?\s*:")
+        start = next((i for i in children if key.match(lines[i])), None)
+        block = layout_yaml(name, layout, indent)
+        if start is not None:
+            stop = next(
+                (i for i in range(start + 1, end) if lines[i].strip() and not lines[i].lstrip().startswith("#")
+                 and len(lines[i]) - len(lines[i].lstrip()) <= len(indent)),
+                end,
+            )  # fmt: skip
+            while stop > start + 1 and not lines[stop - 1].strip():
+                stop -= 1  # пустые строки после пресета оставляем
+            lines[start:stop] = [block]
+        else:
+            last = max(children, default=top)
+            lines.insert(last + 1, block)
+        text = "".join(lines)
+
+    backup = path.with_name(path.name + ".bak")
+    backup.write_text(original, encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
+    try:
+        load_config(path)
+    except ConfigError:
+        path.write_text(original, encoding="utf-8")
+        raise
+    return path
+
+
 def leaf_paths(cls: type = Config, prefix: str = "") -> list[str]:
     """Все параметры в виде ключей через точку: ["paths.workdir", ...]."""
     result = []

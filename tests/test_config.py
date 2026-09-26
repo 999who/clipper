@@ -255,3 +255,45 @@ def test_removed_parameters_explain_themselves(tmp_path):
         load_config(path)
     assert "render.concat" in info.value.message and "больше не поддерживается" in info.value.message
     assert "удалите эту строку" in (info.value.hint or "")
+
+
+def test_save_layout_keeps_comments_and_replaces_or_appends(tmp_path):
+    from clipper.core.config import LayoutConfig, Rect, save_layout
+
+    path = tmp_path / "clipper.yaml"
+    path.write_text(
+        "# мой конфиг\nselect:\n  clips: 7   # мне нужно 7\n\n"
+        "layouts:\n  old:\n    webcam: { x: 1, y: 2, width: 30, height: 40 }\n    game_crop: left\n\n"
+        "# хвост\nrender:\n  encoder: x264\n",
+        encoding="utf-8",
+    )
+    cam = LayoutConfig(webcam=Rect(100, 200, 300, 240), webcam_zone=0.4, game_crop="right", source_size=(1920, 1080))
+    save_layout(path, "cam", cam)
+    save_layout(path, "old", LayoutConfig(webcam=Rect(10, 20, 30, 40)))
+    text = path.read_text(encoding="utf-8")
+    assert "# мой конфиг" in text and "# мне нужно 7" in text and "# хвост" in text
+    assert text.count("old:") == 1 and "x: 1," not in text
+    cfg = load_config(path)
+    assert cfg.select.clips == 7 and cfg.render.encoder == "x264"
+    assert cfg.layouts["cam"] == cam
+    assert cfg.layouts["old"].webcam == Rect(10, 20, 30, 40)
+    assert (tmp_path / "clipper.yaml.bak").is_file()
+
+
+def test_save_layout_creates_file_and_section(tmp_path):
+    from clipper.core.config import LayoutConfig, Rect, save_layout
+
+    fresh = tmp_path / "new.yaml"
+    save_layout(fresh, "стрим", LayoutConfig(webcam=Rect(0, 0, 100, 100)))  # файла нет — из примера
+    assert "стрим" in load_config(fresh).layouts
+
+    plain = tmp_path / "plain.yaml"
+    plain.write_text("select:\n  clips: 3", encoding="utf-8")
+    save_layout(plain, "a", LayoutConfig(webcam=Rect(5, 5, 50, 50)))
+    assert load_config(plain).layouts["a"].webcam.x == 5
+
+    bad = LayoutConfig(webcam=Rect(1900, 0, 100, 100), source_size=(1920, 1080))  # вебка за кадром
+    before = plain.read_text(encoding="utf-8")
+    with pytest.raises(ConfigError):
+        save_layout(plain, "a", bad)
+    assert plain.read_text(encoding="utf-8") == before

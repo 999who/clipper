@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from clipper.core import env
-from clipper.core.config import Config
+from clipper.core.config import Config, LayoutConfig
 from clipper.core.download import prepare_source
 from clipper.core.errors import ClipperError
 from clipper.core.events import Reporter
@@ -37,7 +37,19 @@ class CalibrateResult:
     plan: StreamPlan | None
 
 
-def calibrate(source: str, cfg: Config, reporter: Reporter, at: float | None = None) -> CalibrateResult:
+def calibrate(
+    source: str,
+    cfg: Config,
+    reporter: Reporter,
+    at: float | None = None,
+    *,
+    layout: LayoutConfig | None = None,
+    name: str | None = None,
+) -> CalibrateResult:
+    """Кадр с сеткой; с пресетом — ещё рамки и превью клипа.
+
+    Пресет — `layout` (например, ещё не сохранённый из TUI) или reframe.layout из конфига.
+    """
     info = prepare_source(source, cfg, reporter)
     if info.width <= 0 or info.height <= 0:
         raise ClipperError("Неизвестен размер кадра видео.", hint="Проверьте файл: clipper download ФАЙЛ --force")
@@ -52,9 +64,11 @@ def calibrate(source: str, cfg: Config, reporter: Reporter, at: float | None = N
         )
 
     image = read_frame(ffmpeg, Path(info.video), at, info.width, info.height)
-    name, plan = None, None
-    if cfg.reframe.layout:
+    plan = None
+    if layout is None and cfg.reframe.layout:
         name, layout = layout_for(cfg)
+    if layout is not None:
+        name = name or "preview"
         plan = stream_plan(layout, info.width, info.height)
     draw_grid(image)
     if plan is not None:
